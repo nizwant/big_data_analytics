@@ -66,9 +66,9 @@ def _delays_s(events: list[dict], fetched: datetime) -> list[float]:
 
 def next_interval(res: PollResult, min_interval_s: float) -> float:
     """Seconds until the next poll: own interval or X-Poll-Interval, whichever is longer;
-    at least ERROR_BACKOFF_S after an error that is not a rate limit (that pauses everyone)."""
+    at least ERROR_BACKOFF_S after an error other than a rate limit (that pauses everyone)."""
     interval = max(min_interval_s, float(res.poll_interval_s or 0))
-    if res.error and not res.dead and not res.pause_until:
+    if res.error and not res.pause_until:
         interval = max(interval, ERROR_BACKOFF_S)
     return interval
 
@@ -173,24 +173,17 @@ async def poll_and_store(
     return res, len(new), interval
 
 
-async def endpoint_loop(
-    ctx: Context, endpoint: str, track: str, max_pages: int, min_interval_s: float, start_delay_s: float = 0.0
-) -> None:
-    """Poll one timeline forever (the global track). Returns when the timeline is gone (404/410)."""
-    if start_delay_s:
-        await ctx.clock.sleep(start_delay_s)
+async def endpoint_loop(ctx: Context, endpoint: str, track: str, max_pages: int, min_interval_s: float) -> None:
+    """Poll one timeline forever (the global track). Errors, 404/410 included, back off and retry."""
     while True:
         await ctx.pause.wait()
         try:
-            res, _, interval = await poll_and_store(ctx, endpoint, track, max_pages, min_interval_s)
+            _, _, interval = await poll_and_store(ctx, endpoint, track, max_pages, min_interval_s)
         except Unauthorized:
             raise  # a bad token fails every request: stop the poller
         except Exception:  # keep the task alive; one bad response must not stop the poller
             log.exception("unexpected error while polling %s", endpoint)
-            res, interval = None, ERROR_BACKOFF_S
-        if res is not None and res.dead:
-            log.warning("%s returned HTTP %s; stopped polling it", endpoint, res.status)
-            return
+            interval = ERROR_BACKOFF_S
         await ctx.clock.sleep(interval)
 
 

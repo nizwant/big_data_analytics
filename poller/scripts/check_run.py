@@ -14,11 +14,26 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator, NamedTuple
 
 TRACKS = ("global", "watchlist")
 SLACK_S = 60  # a poll this much later than planned still counts as on schedule
 POLLER_DIR = Path(__file__).resolve().parents[1]
 DELAY_MARKS = ((600, "10 min"), (3600, "1 h"), (6 * 3600, "6 h"))
+REQUEST_FIELDS = ("ts", "endpoint", "track", "tier", "status", "requests", "known", "dup_in_poll",
+                  "rate_remaining", "rate_limited", "next_poll_s", "late_s", "error")
+
+
+class Ev(NamedTuple):
+    """An event record reduced to what the report uses; the raw payload is dropped while reading."""
+
+    id: str
+    type: str | None
+    created_at: str | None
+    track: str
+    endpoint: str
+    fetched_at: str
+    packages: bool | None  # None: written before the field existed
 
 
 def parse_ts(value: str) -> float:
@@ -41,12 +56,32 @@ def resolve_data_dir(argv: list[str]) -> Path:
     return Path("./data")
 
 
-def read_jsonl(paths: list[Path]) -> list[dict]:
-    rows: list[dict] = []
+def iter_jsonl(paths: list[Path]) -> Iterator[dict]:
     for path in paths:
         with open(path, encoding="utf-8") as fh:
-            rows += [json.loads(line) for line in fh if line.strip()]
-    return rows
+            for line in fh:
+                if line.strip():
+                    yield json.loads(line)
+
+
+def _intern(value):
+    return sys.intern(value) if isinstance(value, str) else value
+
+
+def read_requests(paths: list[Path]) -> list[dict]:
+    return [{k: r[k] for k in REQUEST_FIELDS if k in r} for r in iter_jsonl(paths)]
+
+
+def read_events(paths: list[Path]) -> list[Ev]:
+    """Line by line; repeated strings are interned, so a day of events fits in little memory."""
+    out: list[Ev] = []
+    for r in iter_jsonl(paths):
+        e = r["event"]
+        out.append(Ev(
+            str(e.get("id")), _intern(e.get("type")), e.get("created_at"), _intern(r["track"]),
+            _intern(r["endpoint"]), _intern(r["fetched_at"]), bool(r["packages"]) if "packages" in r else None,
+        ))
+    return out
 
 
 def steady_state(req: list[dict]) -> tuple[set[tuple[str, str]], dict[str, list[tuple[float, float]]]]:
@@ -105,8 +140,8 @@ def delay_summary(delays: list[float]) -> str:
 
 def main(argv: list[str]) -> int:
     data_dir = resolve_data_dir(argv)
-    req = read_jsonl(sorted((data_dir / "logs").glob("requests-*.jsonl")))
-    recs = read_jsonl(sorted((data_dir / "events").glob("*.jsonl")))
+    req = read_requests(sorted((data_dir / "logs").glob("requests-*.jsonl")))
+    recs = read_events(sorted((data_dir / "events").glob("*.jsonl")))
     if not req:
         print(f"no request log in {data_dir / 'logs'}; pass DATA_DIR as an argument or set it in .env")
         return 1
@@ -170,30 +205,26 @@ def main(argv: list[str]) -> int:
     elif gl:
         print("  global polls that reached the previous poll: n/a (log written before the 'known' field existed)")
 
-    ids = Counter(str(r["event"].get("id")) for r in recs)
+    ids = Counter(ev.id for ev in recs)
     dups = {i: n for i, n in ids.items() if n > 1}
     print(f"\nevents {len(recs)}, unique ids {len(ids)}, duplicated ids {len(dups)}")
-    with_packages = [r for r in recs if "packages" in r]  # records from v1 on
+    with_packages = [ev for ev in recs if ev.packages is not None]  # records from v1 on
     if with_packages:
         parts = []
         for track in TRACKS:
-            rows = [r for r in with_packages if r["track"] == track]
+            rows = [ev for ev in with_packages if ev.track == track]
             if rows:
-                n = sum(bool(r["packages"]) for r in rows)
+                n = sum(ev.packages for ev in rows)
                 parts.append(f"{track} {n} of {len(rows)} ({n / len(rows):.0%})")
         print("  events in CRAN package repos: " + ", ".join(parts))
     for track in TRACKS:
-        rows = [r for r in recs if r["track"] == track and (r["endpoint"], r["fetched_at"]) in steady]
+        rows = [ev for ev in recs if ev.track == track and (ev.endpoint, ev.fetched_at) in steady]
         run_min = minutes(merge(spans.get(track, [])))
         if not rows or run_min <= 0:
             continue
         # PublicEvent carries the repository's creation time in created_at, so it says nothing about delay.
-        delays = [
-            parse_ts(r["fetched_at"]) - parse_ts(r["event"]["created_at"])
-            for r in rows
-            if r["event"].get("created_at") and r["event"].get("type") != "PublicEvent"
-        ]
-        types = Counter(r["event"].get("type") for r in rows).most_common(4)
+        delays = [parse_ts(ev.fetched_at) - parse_ts(ev.created_at) for ev in rows if ev.created_at and ev.type != "PublicEvent"]
+        types = Counter(ev.type for ev in rows).most_common(4)
         print(f"  {track:9} {len(rows)} in steady state ({len(rows) / run_min:.1f}/min), {delay_summary(delays)}")
         print("            " + ", ".join(f"{t} {n}" for t, n in types))
     if dups:

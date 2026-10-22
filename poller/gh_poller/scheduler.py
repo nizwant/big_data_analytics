@@ -1,7 +1,8 @@
 """Watch-list scheduler: a queue per tier by next poll time, tier 1 first, at most 10 polls at once.
 
-The automatic tier-2 interval is ceil(tier-2 timelines / tier2_budget_per_h) hours, so a whole cycle
-of paid 200s (as in the first cycle) stays within the hourly quota.
+Tier 2 is capped at tier2_budget_per_h paid page requests per hour, whatever the backlog (first
+cycle, restart, sleep, quota reset). The automatic tier-2 interval, ceil(tier-2 timelines /
+tier2_budget_per_h) hours, keeps a whole cycle of paid polls within that cap.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 from .github import PollResult, Unauthorized
-from .limits import Budget, Clock, Pause
+from .limits import Budget, Clock, PageBudget, Pause
 
 log = logging.getLogger("gh_poller")
 
@@ -64,6 +65,7 @@ class Scheduler:
         self.clock = clock or Clock()
         self.pause = pause or Pause(self.clock)
         self.budget = budget or Budget(self.clock)
+        self.pages = PageBudget(tier2_budget_per_h, clock=self.clock)  # paid tier-2 page requests
         self.max_idle_s = max_idle_s
         self._slots = asyncio.Semaphore(max_concurrency)
         self._queues: dict[int, list[_Due]] = {1: [], 2: []}
@@ -72,7 +74,6 @@ class Scheduler:
         self._next_at: dict[str, float] = {}
         self._in_flight: set[str] = set()
         self._seq = itertools.count()
-        self._cold_until = 0.0  # last first-poll time already planned for tier 2
         self._tasks: set[asyncio.Task] = set()
         self._fatal: BaseException | None = None
 
@@ -92,8 +93,8 @@ class Scheduler:
     def update(self, tiers: dict[str, int], order: list[str] | None = None, history: History | None = None) -> tuple[int, int, int]:
         """Apply a watch-list; returns (added, removed, re-tiered).
 
-        Known endpoints resume from `history`; first polls are spread: tier 1 over one interval,
-        tier 2 at `tier2_budget_per_h` per hour, in `order`.
+        Known endpoints resume from `history`. First polls: tier 1 spread over one interval, tier 2
+        due at once in `order` (the page budget paces them).
         """
         now = self.clock.now()
         history = history or {}
@@ -123,12 +124,8 @@ class Scheduler:
                 self._push(e, last + (DEAD_RECHECK_S if status in (404, 410) else self.base_interval(tier)))
         for i, e in enumerate(first[1]):
             self._push(e, now + i * self.tier1_interval_s / len(first[1]))
-        if first[2]:
-            gap = 3600 / self.tier2_budget_per_h
-            start = max(now, self._cold_until)
-            for i, e in enumerate(first[2]):
-                self._push(e, start + i * gap)
-            self._cold_until = start + len(first[2]) * gap
+        for e in first[2]:
+            self._push(e, now)
         return added, len(removed), retiered
 
     def _push(self, endpoint: str, at: float) -> None:
@@ -145,15 +142,19 @@ class Scheduler:
 
     def _pop_due(self, now: float) -> tuple[_Due, int] | None:
         for tier in (1, 2):
-            if tier == 2 and self.budget.tier2_paused():
+            if tier == 2 and (self.budget.tier2_paused() or self.pages.wait_s() > 0):
                 continue
             head = self._head(tier)
             if head is not None and head.at <= now:
+                if tier == 2:
+                    self.pages.reserve()
                 return heapq.heappop(self._queues[tier]), tier
         return None
 
     def _idle_s(self, now: float) -> float:
-        heads = [h.at for t in (1, 2) if (h := self._head(t)) and not (t == 2 and self.budget.tier2_paused())]
+        heads = [h.at for h in [self._head(1)] if h]
+        if (h := self._head(2)) and not self.budget.tier2_paused():
+            heads.append(max(h.at, now + self.pages.wait_s()))
         return min(self.max_idle_s, max(0.0, min(heads, default=now + self.max_idle_s) - now))
 
     async def run(self) -> None:
@@ -186,8 +187,10 @@ class Scheduler:
 
     async def _poll_one(self, endpoint: str, tier: int, due_at: float) -> None:
         interval = float(ERROR_BACKOFF_S)
+        paid = 1  # unknown after an exception: keep the reserved token spent
         try:
             res, interval = await self._poll(endpoint, tier, self.base_interval(tier), self.clock.now() - due_at)
+            paid = max(0, res.requests - (1 if res.status == 304 else 0))
             if res.dead:
                 interval = DEAD_RECHECK_S
                 log.warning("%s returned HTTP %s; next check in %d days", endpoint, res.status, DEAD_RECHECK_S // 86400)
@@ -197,6 +200,8 @@ class Scheduler:
         except Exception:  # one bad response must not stop the poller
             log.exception("unexpected error while polling %s", endpoint)
         finally:
+            if tier == 2:
+                self.pages.settle(paid)
             self._slots.release()
             self._in_flight.discard(endpoint)
         if endpoint in self._tier:
