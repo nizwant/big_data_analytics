@@ -1,0 +1,13 @@
+package,owner,repo,endpoint,tier
+,cran,,/orgs/cran/events,1
+,tidyverse,,/orgs/tidyverse/events,1
+,r-lib,,/orgs/r-lib/events,1
+,rstudio,,/orgs/rstudio/events,1
+,posit-dev,,/orgs/posit-dev/events,1
+,ropensci,,/orgs/ropensci/events,1
+,tidymodels,,/orgs/tidymodels/events,1
+,mlr-org,,/orgs/mlr-org/events,1
+,r-spatial,,/orgs/r-spatial/events,1
+,easystats,,/orgs/easystats/events,1
+,r-dbi,,/orgs/r-dbi/events,1
+,rdatatable,,/orgs/rdatatable/events,1
