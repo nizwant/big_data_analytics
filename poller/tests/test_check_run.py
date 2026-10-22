@@ -38,7 +38,7 @@ def write_runs(data_dir: Path, starts: list[float], polls: int = 10, per_poll: i
 
 def test_running_time_leaves_out_the_break_between_runs(tmp_path):
     write_runs(tmp_path, starts=[T0, T0 + 9 * EVERY_S + 1200])
-    req = check_run.read_jsonl(sorted((tmp_path / "logs").glob("*.jsonl")))
+    req = check_run.read_requests(sorted((tmp_path / "logs").glob("*.jsonl")))
     steady, spans = check_run.steady_state(req)
     runs = check_run.merge(spans["global"])
     assert len(runs) == 2
@@ -149,3 +149,11 @@ def test_share_of_events_in_cran_package_repos(tmp_path, capsys):
     code, out = run_main(tmp_path, capsys)
     assert code == 0
     assert "events in CRAN package repos: watchlist 3 of 4 (75%)" in out
+
+
+def test_events_are_read_without_their_payload(tmp_path):
+    path = tmp_path / "events.jsonl"
+    append_jsonl(path, [{"fetched_at": iso(T0), "track": "watchlist", "endpoint": "/orgs/r-lib/events", "packages": ["cli"],
+                         "event": {"id": "1", "type": "PushEvent", "created_at": iso(T0 - 60), "payload": {"big": "x" * 1000}}}])
+    (ev,) = check_run.read_events([path])
+    assert ev == check_run.Ev("1", "PushEvent", iso(T0 - 60), "watchlist", "/orgs/r-lib/events", iso(T0), True)

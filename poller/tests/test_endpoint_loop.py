@@ -73,12 +73,14 @@ def test_next_poll_waits_the_longer_of_x_poll_interval_and_own_interval(
 
 
 @respx.mock
-def test_server_error_backs_off_for_5_minutes(monkeypatch, tmp_path):
+@pytest.mark.parametrize("status", [502, 404, 410])
+def test_error_backs_off_for_5_minutes_and_polling_goes_on(monkeypatch, tmp_path, status):
+    # 404/410 too: the global feed must never stop for good.
     monkeypatch.setattr(github, "RETRY_DELAYS_S", (0, 0, 0))
-    respx.get(f"{API}/events").mock(return_value=httpx.Response(502))
-    clock, stopped = run_loop(tmp_path, "/events", stop_after=1, min_interval_s=60)
+    respx.get(f"{API}/events").mock(return_value=httpx.Response(status))
+    clock, stopped = run_loop(tmp_path, "/events", stop_after=2, min_interval_s=60)
     assert ERROR_BACKOFF_S == 300
-    assert stopped and clock.sleeps == [ERROR_BACKOFF_S]
+    assert stopped and clock.sleeps == [ERROR_BACKOFF_S, ERROR_BACKOFF_S]
 
 
 def test_exception_in_poll_does_not_stop_the_loop(monkeypatch, tmp_path, caplog):

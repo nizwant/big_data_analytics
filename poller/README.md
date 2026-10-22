@@ -35,7 +35,7 @@ Environment variables or `.env` (all settings: `.env.example`).
 | `WATCHLIST_PATH` | `DATA_DIR/watchlist.csv` | Watch-list, reloaded when the file changes |
 | `TIER1_INTERVAL_S` | `120` | Tier-1 poll interval |
 | `TIER2_INTERVAL_S` | automatic | Tier-2 poll interval (≥ 900); automatic: tier-2 timelines / `TIER2_BUDGET_PER_H`, in whole hours |
-| `TIER2_BUDGET_PER_H` | `3500` | Tier-2 requests per hour |
+| `TIER2_BUDGET_PER_H` | `3500` | Cap on paid tier-2 page requests per hour (304s are free) |
 | `ORG_MIN_R_SHARE` | `0.5` | Poll an organisation's timeline only if this share of its public repos are R packages |
 
 ## Watch-list
@@ -73,8 +73,10 @@ DATA_DIR/
 
 - **Conditional requests:** an unchanged timeline answers `304`, which does not use the 5,000 requests/h quota.
 - **Pacing:** at most 10 polls at once, 300 requests/min, tier 1 before tier 2, `X-Poll-Interval` respected.
-- **Quota:** below 1,000 remaining, tier-2 intervals double; below 200, tier 2 waits for the hourly reset.
+- **Quota:** tier 2 never exceeds `TIER2_BUDGET_PER_H` paid page requests per hour, also after a restart,
+  sleep or quota reset. Below 1,000 remaining, tier-2 intervals double; below 200, tier 2 waits for the reset.
   A rate limit (403/429) pauses all polling until the reset or `Retry-After`.
 - **Restarts:** ETags, schedule and written event ids are kept in SQLite.
 - **Errors:** `5xx` and network errors are retried (2, 4, 8 s); other errors back off the timeline for
-  5 min; `404`/`410` on the watch-list is rechecked after 7 days; `401` stops the poller.
+  5 min (on the global feed `404`/`410` too); `404`/`410` on the watch-list is rechecked after 7 days;
+  `401` stops the poller.

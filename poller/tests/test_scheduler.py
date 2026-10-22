@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from gh_poller.github import PollResult, Unauthorized
-from gh_poller.limits import Budget, Pause
+from gh_poller.limits import BURST, Budget, Pause
 from gh_poller.runner import next_interval
 from gh_poller.scheduler import DEAD_RECHECK_S, ERROR_BACKOFF_S, MAX_CONCURRENCY, Scheduler, auto_tier2_interval_s
 
@@ -89,25 +89,25 @@ def test_tier1_goes_first_while_tier2_has_a_backlog():
     assert max(late for _, e, tier, _, late in gh.calls if tier == 2) > 500  # the backlog is real
 
 
-def test_first_polls_are_spread_out_and_tier1_starts_first():
+def test_first_polls_tier1_spread_tier2_at_once_in_order():
     tiers = {**{f"/orgs/t{i}/events": 1 for i in range(4)}, **{f"/repos/o/r{i}/events": 2 for i in range(10)}}
-    clock, gh, sched = setup(tiers, budget_per_h=360)  # one tier-2 first poll every 10 s
+    clock, gh, sched = setup(tiers)
     simulate(clock, sched, 100)
     first = {e: gh.times(e)[0] for e in tiers}
     assert sorted(first[f"/orgs/t{i}/events"] for i in range(4)) == [0, 30, 60, 90]  # over one tier-1 interval
-    assert sorted(first[f"/repos/o/r{i}/events"] for i in range(10)) == list(range(0, 100, 10))
+    assert {first[f"/repos/o/r{i}/events"] for i in range(10)} == {0}  # paced by the page budget, not by time
     assert gh.calls[0][2] == 1
 
 
-def test_timelines_added_later_queue_behind_the_cold_start():
-    clock, gh, sched = setup({f"/repos/o/r{i}/events": 2 for i in range(10)}, budget_per_h=360)
+def test_timelines_added_later_are_polled_at_once():
+    clock, gh, sched = setup({f"/repos/o/r{i}/events": 2 for i in range(10)})
 
     async def add_more():
         await clock.sleep(20)
         sched.update({**sched.endpoints, **{f"/repos/n/r{i}/events": 2 for i in range(3)}})
 
     simulate(clock, sched, 200, add_more())
-    assert sorted(gh.times(f"/repos/n/r{i}/events")[0] for i in range(3)) == [100, 110, 120]
+    assert all(20 <= gh.times(f"/repos/n/r{i}/events")[0] <= 25 for i in range(3))
 
 
 def test_restart_continues_from_the_last_poll():
@@ -234,18 +234,28 @@ def test_automatic_tier2_interval_is_timelines_over_budget_rounded_up_to_hours()
     assert auto_tier2_interval_s(0, 3500) == HOUR
 
 
-def test_paid_polls_stay_within_the_tier2_budget_in_the_first_cycles():
-    # 25 tier-2 timelines, budget 10 per hour: every 3 h, first polls 6 min apart. Even if every
-    # answer is a paid 200, no hour holds more than 10 tier-2 polls.
-    tiers = {f"/repos/o/r{i:02}/events": 2 for i in range(25)}
-    answers = {e: (lambda n, e=e: PollResult(e, status=200)) for e in tiers}
-    clock, gh, sched = setup(tiers, intervals=(120, None), budget_per_h=10, answers=answers)
-    simulate(clock, sched, 10 * HOUR)
+def test_paid_tier2_pages_keep_to_the_budget_after_a_long_stop():
+    # 30 tier-2 timelines last polled 10 h ago are all due at once; each answer costs 3 paid pages.
+    # Budget 60 pages/h: after a burst (10 tokens + extra pages of the polls in flight), one poll
+    # every 3 min, whatever the backlog.
+    tiers = {f"/repos/o/r{i:02}/events": 2 for i in range(30)}
+    history = {e: (200, T0 - 10 * HOUR) for e in tiers}
+    answers = {e: (lambda n, e=e: PollResult(e, status=200, requests=3)) for e in tiers}
+    clock, gh, sched = setup(tiers, intervals=(120, None), budget_per_h=60, history=history, answers=answers)
+    simulate(clock, sched, 2 * HOUR)
     times = sorted(t - T0 for t, *_ in gh.calls)
-    assert sched.tier_interval(2) == 3 * HOUR
-    assert gh.times("/repos/o/r00/events")[:3] == [0, 3 * HOUR, 6 * HOUR]
-    assert gh.times("/repos/o/r24/events")[0] == 24 * 360
-    assert max(sum(t <= u < t + HOUR for u in times) for t in times) == 10
+    assert times[:MAX_CONCURRENCY] == [0] * MAX_CONCURRENCY
+    assert set(gaps(times[MAX_CONCURRENCY:])) == {180}
+    pages_per_hour = max(3 * sum(t <= u < t + HOUR for u in times) for t in times)
+    assert pages_per_hour <= 60 + BURST + 2 * MAX_CONCURRENCY
+
+
+def test_304_costs_nothing_from_the_page_budget():
+    tiers = {f"/repos/o/r{i:02}/events": 2 for i in range(50)}
+    answers = {e: (lambda n, e=e: PollResult(e, status=304, requests=1)) for e in tiers}
+    clock, gh, sched = setup(tiers, budget_per_h=1, answers=answers)  # one paid page per hour
+    simulate(clock, sched, 60)
+    assert len(gh.calls) == 50 and {t for t, *_ in gh.calls} == {T0}
 
 
 def test_automatic_tier2_interval_follows_the_watchlist_size():

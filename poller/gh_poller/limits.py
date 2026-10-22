@@ -77,6 +77,37 @@ class RequestGate:
         await self.pause.wait()  # a pause may have started while we waited for the token
 
 
+class PageBudget:
+    """Paid page requests per hour (tier 2). A poll starts only with a token in hand and is then
+    charged its paid pages: a 304 costs nothing, extra pages may take the balance below zero."""
+
+    def __init__(self, per_h: float, burst: int = BURST, clock: Clock | None = None) -> None:
+        self.clock = clock or Clock()
+        self.rate = per_h / 3600
+        self.capacity = float(burst)
+        self.tokens = float(burst)
+        self.updated = self.clock.now()
+
+    def _refill(self) -> None:
+        now = self.clock.now()
+        self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+
+    def wait_s(self) -> float:
+        """Seconds until a poll may start; 0 when a token is available."""
+        self._refill()
+        missing = 1 - 1e-6 - self.tokens  # tolerate float rounding of epoch timestamps
+        return 0.0 if missing <= 0 else max(missing / self.rate, 0.001)
+
+    def reserve(self) -> None:
+        self._refill()
+        self.tokens -= 1
+
+    def settle(self, paid_pages: int) -> None:
+        """Return the reserved token and charge the pages that were actually paid."""
+        self.tokens = min(self.capacity, self.tokens + 1 - paid_pages)
+
+
 class Budget:
     """Hourly quota from the X-RateLimit-Remaining / X-RateLimit-Reset headers of every response."""
 
