@@ -9,3 +9,25 @@ This project proposes an analytics system for Poland's CRAN mirror (`cran.m2.ai`
 - Match CRAN packages to their upstream repositories using the `r-universe` `crantogit` mapping.
 
 See [Milestone 1](deliverables/Milestone_1.pdf) for the project proposal and architecture.
+
+## Running
+
+The stack includes Kafka 4.3.2 (single-node KRaft), and a one-shot topic initializer. It creates the topics `cran_mirror_logs`, `github_repo_updates`, and `github_repo_list`.
+
+**Dev** (also starts the fake log generator, which sends about 4 events/s to `cran_mirror_logs` topic):
+
+```sh
+docker compose --profile dev up -d --build
+```
+
+**Stage/prod** (Kafka data in `/srv/bigdata/kafka`; the container runs as uid 1000):
+
+```sh
+KAFKA_DATA_DIR=/srv/bigdata/kafka docker compose up -d
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `KAFKA_DATA_DIR` | `kafka-data` volume | Kafka data path |
+| `BIND_ADDRESS` | `127.0.0.1` | Host interface for port 9092 |
+| `KAFKA_EXTERNAL_HOST` | `localhost` | Host advertised to clients outside Docker |
