@@ -23,8 +23,11 @@ docker compose --profile dev up -d --build
 **Stage/prod** (Kafka data in `/srv/bigdata/kafka`; the container runs as uid 1000):
 
 ```sh
-KAFKA_DATA_DIR=/srv/bigdata/kafka docker compose up -d
+sudo chown -R 1000:1000 /srv/bigdata/kafka
+docker compose --env-file deploy/prod.env up -d    # or deploy/stage.env
 ```
+
+Kafka listens on `<vm-ip>:9092` without authentication.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
