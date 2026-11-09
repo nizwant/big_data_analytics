@@ -14,9 +14,9 @@ See [Milestone 1](deliverables/Milestone_1.pdf) for the project proposal and arc
 
 The stack includes:
 
-- **Kafka** 4.3.2 (single-node KRaft) and a one-shot topic initializer. It creates the topics `cran_mirror_logs`, `github_repo_updates`, and `github_repo_list`.
+- **Kafka** 4.3.2 (single-node KRaft) with the topics `cran_mirror_logs`, `github_repo_updates`, and `github_repo_list` (topic auto-creation is disabled).
 - **HDFS** 3.4.2 (1 NameNode + 1 DataNode, replication 1) for the batch layer. The NameNode is formatted automatically on first start. Inside the Docker network it is reachable at `hdfs://namenode:8020`. Only the web UI is published, at `<host>:9870`.
-- **Cassandra** 5.0.9 (single node, 1 GB heap) for the serving layer, published at `<host>:9042` without authentication. A one-shot initializer creates the keyspace `cran_analytics` (SimpleStrategy, RF 1). The Flink and Spark jobs will add the `rt_*` and `batch_*` tables.
+- **Cassandra** 5.0.9 (single node, 1 GB heap) for the serving layer, published at `<host>:9042` without authentication, with the keyspace `cran_analytics` (SimpleStrategy, RF 1). The Flink and Spark jobs will add the `rt_*` and `batch_*` tables.
 
 The Hadoop image is published only for amd64, so on Apple Silicon it runs under emulation.
 
@@ -24,7 +24,7 @@ The Hadoop image is published only for amd64, so on Apple Silicon it runs under 
 
 ```sh
 docker compose --profile dev up -d --build
-deploy/hdfs_init.sh    # create HDFS directories (idempotent)
+deploy/init.sh    # create topics, HDFS dirs and keyspace (idempotent)
 ```
 
 **Stage/prod** (data in `/srv/bigdata/{kafka,hdfs,cassandra}`; Kafka and Hadoop run as uid 1000, Cassandra as uid 999):
@@ -34,10 +34,16 @@ sudo mkdir -p /srv/bigdata/kafka /srv/bigdata/hdfs/namenode /srv/bigdata/hdfs/da
 sudo chown -R 1000:1000 /srv/bigdata/kafka /srv/bigdata/hdfs
 sudo chown -R 999:999 /srv/bigdata/cassandra
 docker compose --env-file deploy/prod.env up -d    # or deploy/stage.env
-deploy/hdfs_init.sh --env-file deploy/prod.env
+deploy/init.sh --env-file deploy/prod.env
 ```
 
-`deploy/hdfs_init.sh` waits for HDFS to leave safe mode, then creates `/data/raw/{cran_mirror_logs,github_repo_updates,github_repo_list}`. Any arguments are passed through to `docker compose`.
+`deploy/init.sh` runs these scripts in order. Each one waits for its service, is safe to re-run, and passes any arguments through to `docker compose`:
+
+- `deploy/kafka_init.sh` creates the Kafka topics (3 partitions, RF 1).
+- `deploy/hdfs_init.sh` waits for HDFS to leave safe mode, then creates `/data/raw/{cran_mirror_logs,github_repo_updates,github_repo_list}`.
+- `deploy/cassandra_init.sh` creates the `cran_analytics` keyspace.
+
+In dev the log generator starts before its topic exists and buffers events until `deploy/init.sh` creates it.
 
 Useful checks:
 

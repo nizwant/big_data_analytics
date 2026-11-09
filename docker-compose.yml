@@ -40,22 +40,6 @@ services:
       retries: 10
       start_period: 20s
 
-  kafka-init:
-    image: apache/kafka:4.3.2
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      TOPICS: cran_mirror_logs github_repo_updates github_repo_list
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -e
-        for topic in $$TOPICS; do
-          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists \
-            --topic "$$topic" --partitions 3 --replication-factor 1
-        done
-
   namenode:
     image: apache/hadoop:3.4.2
     platform: linux/amd64
@@ -115,27 +99,14 @@ services:
       retries: 20
       start_period: 60s
 
-  cassandra-init:
-    image: cassandra:5.0.9
-    depends_on:
-      cassandra:
-        condition: service_healthy
-    environment:
-      KEYSPACE: cran_analytics
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -e
-        cqlsh cassandra -e "CREATE KEYSPACE IF NOT EXISTS $$KEYSPACE
-          WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};"
-
   mirror-log-generator:
     profiles: [dev]
     build: ./src/mirror_log_generator
     restart: unless-stopped
+    # Topics are created by deploy/kafka_init.sh; the producer buffers until they exist.
     depends_on:
-      kafka-init:
-        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: cran_mirror_logs
