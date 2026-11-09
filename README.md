@@ -12,25 +12,46 @@ See [Milestone 1](deliverables/Milestone_1.pdf) for the project proposal and arc
 
 ## Running
 
-The stack includes Kafka 4.3.2 (single-node KRaft), and a one-shot topic initializer. It creates the topics `cran_mirror_logs`, `github_repo_updates`, and `github_repo_list`.
+The stack includes:
+
+- **Kafka** 4.3.2 (single-node KRaft) and a one-shot topic initializer. It creates the topics `cran_mirror_logs`, `github_repo_updates`, and `github_repo_list`.
+- **HDFS** 3.4.2 (1 NameNode + 1 DataNode, replication 1) for the batch layer. The NameNode is formatted automatically on first start. Inside the Docker network it is reachable at `hdfs://namenode:8020`. Only the web UI is published, at `<host>:9870`.
+- **Cassandra** 5.0.9 (single node, 1 GB heap) for the serving layer, published at `<host>:9042` without authentication. A one-shot initializer creates the keyspace `cran_analytics` (SimpleStrategy, RF 1). The Flink and Spark jobs will add the `rt_*` and `batch_*` tables.
+
+The Hadoop image is published only for amd64, so on Apple Silicon it runs under emulation.
 
 **Dev** (also starts the fake log generator, which sends about 4 events/s to `cran_mirror_logs` topic):
 
 ```sh
 docker compose --profile dev up -d --build
+deploy/hdfs_init.sh    # create HDFS directories (idempotent)
 ```
 
-**Stage/prod** (Kafka data in `/srv/bigdata/kafka`; the container runs as uid 1000):
+**Stage/prod** (data in `/srv/bigdata/{kafka,hdfs,cassandra}`; Kafka and Hadoop run as uid 1000, Cassandra as uid 999):
 
 ```sh
-sudo chown -R 1000:1000 /srv/bigdata/kafka
+sudo mkdir -p /srv/bigdata/kafka /srv/bigdata/hdfs/namenode /srv/bigdata/hdfs/datanode /srv/bigdata/cassandra
+sudo chown -R 1000:1000 /srv/bigdata/kafka /srv/bigdata/hdfs
+sudo chown -R 999:999 /srv/bigdata/cassandra
 docker compose --env-file deploy/prod.env up -d    # or deploy/stage.env
+deploy/hdfs_init.sh --env-file deploy/prod.env
 ```
 
-Kafka listens on `<vm-ip>:9092` without authentication.
+`deploy/hdfs_init.sh` waits for HDFS to leave safe mode, then creates `/data/raw/{cran_mirror_logs,github_repo_updates,github_repo_list}`. Any arguments are passed through to `docker compose`.
+
+Useful checks:
+
+```sh
+docker compose exec namenode hdfs dfs -ls -R /data
+docker compose exec cassandra cqlsh -e "describe keyspace cran_analytics"
+```
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `KAFKA_DATA_DIR` | `kafka-data` volume | Kafka data path |
-| `BIND_ADDRESS` | `127.0.0.1` | Host interface for port 9092 |
+| `HDFS_NAMENODE_DIR` | `hdfs-namenode` volume | NameNode metadata path |
+| `HDFS_DATANODE_DIR` | `hdfs-datanode` volume | DataNode block storage path |
+| `CASSANDRA_DATA_DIR` | `cassandra-data` volume | Cassandra data path |
+| `CASSANDRA_MAX_HEAP` | `1G` | Cassandra JVM max heap |
+| `BIND_ADDRESS` | `127.0.0.1` | Host interface for published ports (9092, 9042, 9870) |
 | `KAFKA_EXTERNAL_HOST` | `localhost` | Host advertised to clients outside Docker |

@@ -1,5 +1,15 @@
 name: bigdata
 
+x-hadoop-config: &hadoop-config
+  CORE-SITE.XML_fs.defaultFS: hdfs://namenode:8020
+  HDFS-SITE.XML_dfs.replication: 1
+  HDFS-SITE.XML_dfs.namenode.name.dir: file:///data/name
+  HDFS-SITE.XML_dfs.datanode.data.dir: file:///data/datanode
+  HDFS-SITE.XML_dfs.namenode.rpc-bind-host: 0.0.0.0
+  HDFS-SITE.XML_dfs.namenode.http-bind-host: 0.0.0.0
+  HDFS-SITE.XML_dfs.namenode.datanode.registration.ip-hostname-check: "false"
+  HDFS-SITE.XML_dfs.permissions.enabled: "false"
+
 services:
   kafka:
     image: apache/kafka:4.3.2
@@ -46,6 +56,79 @@ services:
             --topic "$$topic" --partitions 3 --replication-factor 1
         done
 
+  namenode:
+    image: apache/hadoop:3.4.2
+    platform: linux/amd64
+    restart: unless-stopped
+    hostname: namenode
+    command: ["hdfs", "namenode"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:9870:9870"
+    environment:
+      <<: *hadoop-config
+      # Formats the NameNode only on first start (when the metadata dir does not exist yet).
+      ENSURE_NAMENODE_DIR: /data/name/current
+    volumes:
+      - ${HDFS_NAMENODE_DIR:-hdfs-namenode}:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9870/ >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  datanode:
+    image: apache/hadoop:3.4.2
+    platform: linux/amd64
+    restart: unless-stopped
+    hostname: datanode
+    command: ["hdfs", "datanode"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    environment:
+      <<: *hadoop-config
+    volumes:
+      - ${HDFS_DATANODE_DIR:-hdfs-datanode}:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9864/ >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  cassandra:
+    image: cassandra:5.0.9
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: big-data-analytics
+      MAX_HEAP_SIZE: ${CASSANDRA_MAX_HEAP:-1G}
+      HEAP_NEWSIZE: 200M
+    volumes:
+      - ${CASSANDRA_DATA_DIR:-cassandra-data}:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  cassandra-init:
+    image: cassandra:5.0.9
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    environment:
+      KEYSPACE: cran_analytics
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        cqlsh cassandra -e "CREATE KEYSPACE IF NOT EXISTS $$KEYSPACE
+          WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};"
+
   mirror-log-generator:
     profiles: [dev]
     build: ./src/mirror_log_generator
@@ -61,3 +144,6 @@ services:
 
 volumes:
   kafka-data:
+  hdfs-namenode:
+  hdfs-datanode:
+  cassandra-data:
