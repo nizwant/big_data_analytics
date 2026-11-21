@@ -15,7 +15,7 @@ See [Milestone 1](deliverables/Milestone_1.pdf) for the project proposal and arc
 The stack includes:
 
 - **Kafka** 4.3.2 (single-node KRaft) with the topics `cran_mirror_logs`, `github_repo_updates`, and `github_repo_list` (topic auto-creation is disabled).
-- **HDFS** 3.4.2 (1 NameNode + 1 DataNode, replication 1) for the batch layer. The NameNode is formatted automatically on first start. Inside the Docker network it is reachable at `hdfs://namenode:8020`. Only the web UI is published, at `<host>:9870`.
+- **HDFS** 3.4.2 (1 NameNode + 3 DataNodes, replication 2) for the batch layer. The NameNode is formatted automatically on first start. Inside the Docker network it is reachable at `hdfs://namenode:8020`. Only the web UI is published, at `<host>:9870`.
 - **Cassandra** 5.0.9 (single node, 1 GB heap) for the serving layer, published at `<host>:9042` without authentication, with the keyspace `cran_analytics` (SimpleStrategy, RF 1). The Flink and Spark jobs will add the `rt_*` and `batch_*` tables.
 
 The Hadoop image is published only for amd64, so on Apple Silicon it runs under emulation.
@@ -30,7 +30,7 @@ deploy/init.sh    # create topics, HDFS dirs and keyspace (idempotent)
 **Stage/prod** (data in `/srv/bigdata/{kafka,hdfs,cassandra}`; Kafka and Hadoop run as uid 1000, Cassandra as uid 999):
 
 ```sh
-sudo mkdir -p /srv/bigdata/kafka /srv/bigdata/hdfs/namenode /srv/bigdata/hdfs/datanode /srv/bigdata/cassandra
+sudo mkdir -p /srv/bigdata/kafka /srv/bigdata/hdfs/namenode /srv/bigdata/hdfs/datanode{1,2,3} /srv/bigdata/cassandra
 sudo chown -R 1000:1000 /srv/bigdata/kafka /srv/bigdata/hdfs
 sudo chown -R 999:999 /srv/bigdata/cassandra
 docker compose --env-file deploy/prod.env up -d    # or deploy/stage.env
@@ -56,7 +56,7 @@ docker compose exec cassandra cqlsh -e "describe keyspace cran_analytics"
 | --- | --- | --- |
 | `KAFKA_DATA_DIR` | `kafka-data` volume | Kafka data path |
 | `HDFS_NAMENODE_DIR` | `hdfs-namenode` volume | NameNode metadata path |
-| `HDFS_DATANODE_DIR` | `hdfs-datanode` volume | DataNode block storage path |
+| `HDFS_DATANODE1_DIR` … `HDFS_DATANODE3_DIR` | `hdfs-datanode1`…`3` volumes | Block storage path of each DataNode |
 | `CASSANDRA_DATA_DIR` | `cassandra-data` volume | Cassandra data path |
 | `CASSANDRA_MAX_HEAP` | `1G` | Cassandra JVM max heap |
 | `BIND_ADDRESS` | `127.0.0.1` | Host interface for published ports (9092, 9042, 9870) |

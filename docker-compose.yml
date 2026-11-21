@@ -2,7 +2,7 @@ name: bigdata
 
 x-hadoop-config: &hadoop-config
   CORE-SITE.XML_fs.defaultFS: hdfs://namenode:8020
-  HDFS-SITE.XML_dfs.replication: 1
+  HDFS-SITE.XML_dfs.replication: 2
   HDFS-SITE.XML_dfs.namenode.name.dir: file:///data/name
   HDFS-SITE.XML_dfs.datanode.data.dir: file:///data/datanode
   HDFS-SITE.XML_dfs.namenode.rpc-bind-host: 0.0.0.0
@@ -61,11 +61,11 @@ services:
       retries: 10
       start_period: 30s
 
-  datanode:
+  datanode1: &datanode
     image: apache/hadoop:3.4.2
     platform: linux/amd64
     restart: unless-stopped
-    hostname: datanode
+    hostname: datanode1
     command: ["hdfs", "datanode"]
     depends_on:
       namenode:
@@ -73,13 +73,25 @@ services:
     environment:
       <<: *hadoop-config
     volumes:
-      - ${HDFS_DATANODE_DIR:-hdfs-datanode}:/data
+      - ${HDFS_DATANODE1_DIR:-hdfs-datanode1}:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9864/ >/dev/null"]
       interval: 10s
       timeout: 10s
       retries: 10
       start_period: 30s
+
+  datanode2:
+    <<: *datanode
+    hostname: datanode2
+    volumes:
+      - ${HDFS_DATANODE2_DIR:-hdfs-datanode2}:/data
+
+  datanode3:
+    <<: *datanode
+    hostname: datanode3
+    volumes:
+      - ${HDFS_DATANODE3_DIR:-hdfs-datanode3}:/data
 
   cassandra:
     image: cassandra:5.0.9
@@ -116,5 +128,7 @@ services:
 volumes:
   kafka-data:
   hdfs-namenode:
-  hdfs-datanode:
+  hdfs-datanode1:
+  hdfs-datanode2:
+  hdfs-datanode3:
   cassandra-data:
