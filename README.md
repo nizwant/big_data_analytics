@@ -48,11 +48,9 @@ GitHub poller (needs the topics from `deploy/init.sh`, and `poller/.env` with th
 
 ```sh
 sudo mkdir -p /srv/bigdata/poller && sudo chown 1000:1000 /srv/bigdata/poller
-docker compose --env-file deploy/prod.env --profile github run --rm github-poller python -m gh_poller.watchlist   # watch-list, ~2,800 API calls the first time
+docker compose --env-file deploy/prod.env --profile github run --rm github-poller python -m gh_poller.watchlist   # also sends the rows to github_repo_list
 docker compose --env-file deploy/prod.env --profile github up -d --build github-poller
 ```
-
-In dev, `docker compose --profile dev --profile github up -d --build` starts it with the rest; `POLLER_WATCHLIST_PATH=/app/watchlist.dev.csv` limits it to 12 organisations.
 
 `deploy/init.sh` runs these scripts in order. Each one waits for its service, is safe to re-run, and passes any arguments through to `docker compose`:
 
@@ -81,4 +79,4 @@ docker compose exec cassandra cqlsh -e "describe keyspace cran_analytics"
 | `KAFKA_EXTERNAL_HOST` | `localhost` | Host advertised to clients outside Docker |
 | `POLLER_DATA_DIR` | `poller-data` volume | GitHub poller state, watch-list and logs |
 | `POLLER_WATCHLIST_PATH` | `/data/watchlist.csv` | Watch-list inside the poller container |
-| `POLLER_EVENTS_JSONL` | `false` | Also write the events to daily JSONL files in `POLLER_DATA_DIR` (about 1.3 GB/day) |
+| `POLLER_EVENTS_JSONL` | `false` | Also write the events to daily JSONL files in `POLLER_DATA_DIR` |

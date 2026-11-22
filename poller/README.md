@@ -10,22 +10,23 @@ and/or to daily JSONL files.
 
 ## Run
 
-Python 3.10+, from `poller/`:
+Runs as the Compose service `github-poller` (profile `github`); start, watch-list build and stage/prod
+paths are in the main README. It needs `poller/.env` with `GITHUB_TOKEN` (copy `.env.example`).
 
 ```bash
-python -m venv .venv              # activate: .venv\Scripts\activate (Windows), source .venv/bin/activate
-pip install -r requirements-dev.txt
-cp .env.example .env              # then set GITHUB_TOKEN
-python -m gh_poller.watchlist     # build DATA_DIR/watchlist.csv (about 2,800 API lookups the first time)
-python -m gh_poller               # Ctrl+C to stop
-python -m pytest                  # mocked HTTP; tests marked live call GitHub when GITHUB_TOKEN is set
+python -m gh_poller.watchlist     # build DATA_DIR/watchlist.csv
+python -m gh_poller               # the poller (the container's default command)
 python scripts/check_run.py       # run report: statuses, rate limits, duplicates, volume, delays (needs EVENTS_JSONL)
 ```
 
-For development, `WATCHLIST_PATH=./watchlist.dev.csv` polls only the 12 tier-1 organisations.
-To send to the local stack's Kafka from outside Docker, set `KAFKA_BOOTSTRAP_SERVERS=localhost:9092`.
-In the stack it runs as the Compose service `github-poller` (see the main README).
-Offline, skip the live tests with `python -m pytest -m "not live"`.
+In the container, prefix with `docker compose --env-file deploy/<env>.env --profile github run --rm github-poller`.
+
+Tests (mocked HTTP; tests marked `live` call GitHub when `GITHUB_TOKEN` is set):
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -m "not live"
+```
 
 ## Configuration
 
@@ -34,14 +35,16 @@ Environment variables or `.env` (all settings: `.env.example`).
 | Variable | Default | Meaning |
 |---|---|---|
 | `GITHUB_TOKEN` | required | Fine-grained PAT, public repositories read-only |
-| `DATA_DIR` | `./data` | Output, state and caches; keep it outside OneDrive/Dropbox |
+| `DATA_DIR` | `./data` | Output, state and caches (in Compose: `/data`, mounted from `POLLER_DATA_DIR`) |
 | `WATCHLIST_PATH` | `DATA_DIR/watchlist.csv` | Watch-list, reloaded when the file changes |
 | `TIER1_INTERVAL_S` | `120` | Tier-1 poll interval |
 | `TIER2_INTERVAL_S` | automatic | Tier-2 poll interval (≥ 900); automatic: tier-2 timelines / `TIER2_BUDGET_PER_H`, in whole hours |
 | `TIER2_BUDGET_PER_H` | `3500` | Cap on paid tier-2 page requests per hour (304s are free) |
+| `CRANTOGIT_URL` | r-universe `crantogit.csv` on GitHub | Source of the package → repo mapping for the watch-list build (URL or file path) |
 | `ORG_MIN_R_SHARE` | `0.5` | Poll an organisation's timeline only if this share of its public repos are R packages |
 | `KAFKA_BOOTSTRAP_SERVERS` | empty | Kafka brokers; empty: no Kafka output (in Compose: `kafka:19092`) |
 | `KAFKA_TOPIC` | `github_repo_updates` | Topic for the events (created by `deploy/kafka_init.sh`) |
+| `WATCHLIST_TOPIC` | `github_repo_list` | Topic for the watch-list rows, sent by every watch-list build when Kafka is set |
 | `EVENTS_JSONL` | `true` | Also write the events to `DATA_DIR/events/` (in Compose: `POLLER_EVENTS_JSONL`, default `false`) |
 
 ## Watch-list
@@ -50,16 +53,21 @@ Environment variables or `.env` (all settings: `.env.example`).
 
 - organisation with mostly R repos → `/orgs/{owner}/events`;
 - any other owner → `/repos/{owner}/{repo}/events` per repo;
-- tier 1: the `cran` mirror and large R organisations; tier 2: the rest.
+- tier 1: the `cran` mirror and a hand-picked list of R organisations (`TIER1_ORGS`, no formal rule); tier 2: the rest.
 
 Account types are cached in `DATA_DIR/account_types.csv`, so an interrupted build resumes. Whatever
-refreshes `watchlist.csv` (e.g. Airflow) should write a temporary file and rename it.
+refreshes `watchlist.csv` should write a temporary file and rename it.
+
+With `KAFKA_BOOTSTRAP_SERVERS` set, the build also sends every row to `github_repo_list`, one JSON message
+per row, key `package` (the endpoint for tier-1 organisations without a package):
+`{"built_at", "package", "owner", "repo", "endpoint", "tier"}`; `built_at` is the same for one build.
+If Kafka does not confirm, the build exits with 1 (the file is already written).
 
 ## Output
 
 Kafka: topic `github_repo_updates`, key `event.repo.name` (events of one repository stay in order),
 value the JSON record below. A message is confirmed (`acks=all`, idempotent producer) before its
-event counts as written; events larger than the broker accepts (1 MB) are logged and dropped.
+event counts as written; events larger than the broker accepts (Kafka default 1 MB) are logged and dropped.
 
 ```
 DATA_DIR/
@@ -77,14 +85,19 @@ DATA_DIR/
 - `event` is the raw GitHub event; `packages` lists the CRAN packages in `event.repo.name`.
 - The format is defined only in `gh_poller/sink.py:make_record`.
 - Delivery is at least once: deduplicate on `event.id`.
+- `event.created_at` is GitHub's own time of the event (use it as event time); `fetched_at` is when the poller
+  received it.
 - `PublicEvent.created_at` is the repository's creation date; leave it out of delay measurements.
 
 ## Reliability
 
 - **Conditional requests:** an unchanged timeline answers `304`, which does not use the 5,000 requests/h quota.
+- **Fewer requests:** one organisation timeline covers all its R repos instead of one request per repo; used only when
+  R repos are at least `ORG_MIN_R_SHARE` of its public repos, since a timeline holds at most 300 events and
+  other activity would push R events out.
 - **Pacing:** at most 10 polls at once, 300 requests/min, tier 1 before tier 2, `X-Poll-Interval` respected.
-- **Quota:** tier 2 never exceeds `TIER2_BUDGET_PER_H` paid page requests per hour, also after a restart,
-  sleep or quota reset. Below 1,000 remaining, tier-2 intervals double; below 200, tier 2 waits for the reset.
+- **Quota:** tier 2 never exceeds `TIER2_BUDGET_PER_H` paid page requests per hour, also after a restart
+  or quota reset. Below 1,000 remaining, tier-2 intervals double; below 200, tier 2 waits for the reset.
   A rate limit (403/429) pauses all polling until the reset or `Retry-After`.
 - **Restarts:** ETags, schedule and written event ids are kept in SQLite.
 - **Errors:** `5xx` and network errors are retried (2, 4, 8 s); other errors back off the timeline for

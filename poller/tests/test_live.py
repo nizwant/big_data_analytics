@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from gh_poller.config import CRANTOGIT_URL
+from gh_poller.config import DEFAULT_CRANTOGIT_URL
 from gh_poller.github import Unauthorized, build_headers, poll
 from gh_poller.watchlist import fetch_account, parse_crantogit, read_source
 
@@ -74,6 +74,6 @@ def test_bad_token_raises_unauthorized():
 
 
 def test_crantogit_parses_into_github_packages():
-    packages = parse_crantogit(asyncio.run(read_source(CRANTOGIT_URL)))
+    packages = parse_crantogit(asyncio.run(read_source(DEFAULT_CRANTOGIT_URL)))
     assert len(packages) > 10_000
     assert any((p.package, p.owner, p.repo) == ("dplyr", "tidyverse", "dplyr") for p in packages)

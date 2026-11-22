@@ -25,10 +25,11 @@ import httpx
 
 from .config import Config, load_config
 from .github import Unauthorized, _get, _int, build_headers, is_rate_limited, raise_if_unauthorized
+from .sink import KafkaSink, SinkError
 
 COLUMNS = ["package", "owner", "repo", "endpoint", "tier"]
 CRAN_MIRROR_ORG = "cran"  # github.com/cran: read-only mirror with one repo per CRAN package
-# Tier 1: the CRAN mirror and large R organisations.
+# Tier 1: the CRAN mirror and a hand-picked list of R organisations (no formal selection rule).
 TIER1_ORGS = (
     "cran", "tidyverse", "r-lib", "rstudio", "posit-dev", "ropensci", "tidymodels",
     "mlr-org", "r-spatial", "easystats", "r-dbi", "rdatatable",
@@ -217,8 +218,30 @@ def account_cache_path(cfg: Config) -> Path:
     return cfg.data_dir / "account_types.csv"
 
 
-async def build(cfg: Config) -> list[str]:
-    """crantogit.csv -> watchlist.csv. Returns summary lines; raises LookupStopped if types are missing."""
+def watchlist_records(rows: list[Row], built_at: str) -> list[dict]:
+    """One message per watch-list row; `built_at` tells the snapshots of successive builds apart."""
+    return [
+        {"built_at": built_at, "package": r.package, "owner": r.owner, "repo": r.repo, "endpoint": r.endpoint, "tier": r.tier}
+        for r in rows
+    ]
+
+
+def _watchlist_key(record: dict) -> str:
+    return record["package"] or record["endpoint"]  # tier-1 orgs have no package
+
+
+def publish_watchlist(rows: list[Row], cfg: Config, producer=None) -> int:
+    """Send the rows to cfg.watchlist_topic and wait for the broker's confirmation."""
+    sink = KafkaSink(cfg.kafka_bootstrap_servers or "", cfg.watchlist_topic, producer=producer, key_of=_watchlist_key)
+    built_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        return sink.write(watchlist_records(rows, built_at))
+    finally:
+        sink.close()
+
+
+async def build(cfg: Config, producer=None) -> list[str]:
+    """crantogit.csv -> watchlist.csv (and github_repo_list if Kafka is set); returns summary lines."""
     packages = parse_crantogit(await read_source(cfg.crantogit_url))
     cache = AccountCache(account_cache_path(cfg))
     owners = owners_to_look_up(packages)
@@ -232,7 +255,10 @@ async def build(cfg: Config) -> list[str]:
             raise LookupStopped(f"{exc}. Account types known for {known} of {len(owners)} owners; run again to continue.") from exc
     rows = plan_endpoints(packages, cache.accounts, org_min_r_share=cfg.org_min_r_share)
     write_watchlist(rows, cfg.watchlist_path)
-    return summarize(packages, cache.accounts, owners, looked_up, rows, cfg)
+    lines = summarize(packages, cache.accounts, owners, looked_up, rows, cfg)
+    if cfg.kafka_bootstrap_servers or producer is not None:
+        lines.append(f"published {publish_watchlist(rows, cfg, producer)} rows to {cfg.watchlist_topic}")
+    return lines
 
 
 def summarize(packages, accounts, owners, looked_up, rows, cfg) -> list[str]:
@@ -270,6 +296,9 @@ def main() -> int:
         lines = asyncio.run(build(cfg))
     except LookupStopped as exc:
         print(f"watch-list not written: {exc}", file=sys.stderr)
+        return 1
+    except SinkError as exc:
+        print(f"{cfg.watchlist_path} written, but not published to {cfg.watchlist_topic}: {exc}", file=sys.stderr)
         return 1
     except Unauthorized as exc:
         raise SystemExit(f"401 Unauthorized: GITHUB_TOKEN is invalid or expired. Watch-list not written. ({exc})") from None

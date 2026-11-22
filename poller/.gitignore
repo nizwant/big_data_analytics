@@ -8,7 +8,6 @@ data/
 *.sqlite3-journal
 
 # Generated watch-list and its account-type cache, if WATCHLIST_PATH points here
-# (watchlist.dev.csv is kept in the repo)
 watchlist.csv
 account_types.csv
 *.csv.tmp

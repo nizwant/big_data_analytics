@@ -262,3 +262,49 @@ def test_rebuild_takes_type_and_public_repos_from_the_cache(tmp_path):
     asyncio.run(build(cfg))
     assert route.call_count == 4  # no request in the second build
     assert read_rows(cfg.watchlist_path) == first  # the share rule decided megacorp from the cached public_repos
+
+
+@respx.mock
+def test_build_publishes_the_rows_to_the_watchlist_topic(tmp_path):
+    from test_kafka_sink import FakeProducer
+
+    respx.get(url__regex=USERS).mock(side_effect=users_handler())
+    cfg = build_cfg(tmp_path)
+    producer = FakeProducer()
+    lines = asyncio.run(build(cfg, producer=producer))
+
+    rows = read_rows(cfg.watchlist_path)
+    assert len(producer.sent) == len(rows)
+    assert {topic for topic, _, _ in producer.sent} == {"github_repo_list"}
+    by_key = {key.decode(): value for _, key, value in producer.sent}
+    assert by_key["dplyr"] == {
+        "built_at": by_key["dplyr"]["built_at"],
+        "package": "dplyr",
+        "owner": "tidyverse",
+        "repo": "dplyr",
+        "endpoint": "/orgs/tidyverse/events",
+        "tier": 1,
+    }
+    assert by_key["/orgs/cran/events"]["package"] == ""
+    assert len({v["built_at"] for v in by_key.values()}) == 1
+    assert f"published {len(rows)} rows to github_repo_list" in lines
+
+
+@respx.mock
+def test_unconfirmed_publish_fails_the_build_after_writing_the_file(tmp_path):
+    from confluent_kafka import KafkaError
+    from gh_poller.sink import SinkError
+    from test_kafka_sink import FakeProducer
+
+    respx.get(url__regex=USERS).mock(side_effect=users_handler())
+    cfg = build_cfg(tmp_path)
+    with pytest.raises(SinkError):
+        asyncio.run(build(cfg, producer=FakeProducer(fail=KafkaError._MSG_TIMED_OUT)))
+    assert read_rows(cfg.watchlist_path)
+
+
+@respx.mock
+def test_build_without_kafka_only_writes_the_file(tmp_path):
+    respx.get(url__regex=USERS).mock(side_effect=users_handler())
+    lines = asyncio.run(build(build_cfg(tmp_path)))
+    assert not any("published" in line for line in lines)

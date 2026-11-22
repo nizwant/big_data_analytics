@@ -1,7 +1,7 @@
 """Watch-list scheduler: a queue per tier by next poll time, tier 1 first, at most 10 polls at once.
 
 Tier 2 is capped at tier2_budget_per_h paid page requests per hour, whatever the backlog (first
-cycle, restart, sleep, quota reset). The automatic tier-2 interval, ceil(tier-2 timelines /
+cycle, restart, quota reset). The automatic tier-2 interval, ceil(tier-2 timelines /
 tier2_budget_per_h) hours, keeps a whole cycle of paid polls within that cap.
 """
 

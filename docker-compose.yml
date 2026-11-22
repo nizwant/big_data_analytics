@@ -244,7 +244,7 @@ services:
       KAFKA_TOPIC: github_repo_updates
       DATA_DIR: /data
       WATCHLIST_PATH: ${POLLER_WATCHLIST_PATH:-/data/watchlist.csv}
-      # Daily JSONL copy of the events (about 1.3 GB/day); on for the 24 h measurement.
+      # Daily JSONL copy of the events (input for scripts/check_run.py).
       EVENTS_JSONL: ${POLLER_EVENTS_JSONL:-false}
     volumes:
       - ${POLLER_DATA_DIR:-poller-data}:/data

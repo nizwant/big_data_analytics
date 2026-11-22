@@ -11,7 +11,7 @@ try:
 except ImportError:  # python-dotenv is optional; plain environment variables work too
     load_dotenv = None
 
-CRANTOGIT_URL = "https://raw.githubusercontent.com/r-universe-org/cran-to-git/master/crantogit.csv"
+DEFAULT_CRANTOGIT_URL = "https://raw.githubusercontent.com/r-universe-org/cran-to-git/master/crantogit.csv"
 
 
 def _bool(value: str | None, default: bool) -> bool:
@@ -35,11 +35,12 @@ class Config:
     user_agent: str = "bda-cran-poller"
     api_url: str = "https://api.github.com"
     # Watch-list build (python -m gh_poller.watchlist)
-    crantogit_url: str = CRANTOGIT_URL
+    crantogit_url: str = DEFAULT_CRANTOGIT_URL
     org_min_r_share: float = 0.5
     # Outputs: Kafka when KAFKA_BOOTSTRAP_SERVERS is set, daily JSONL files when EVENTS_JSONL is on
     kafka_bootstrap_servers: str | None = None
     kafka_topic: str = "github_repo_updates"
+    watchlist_topic: str = "github_repo_list"
     events_jsonl: bool = True
 
     @property
@@ -78,10 +79,11 @@ def load_config(env_file: str | None = ".env") -> Config:
         tier2_budget_per_h=float(env.get("TIER2_BUDGET_PER_H", "3500")),
         user_agent=env.get("USER_AGENT", "bda-cran-poller"),
         api_url=env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
-        crantogit_url=env.get("CRANTOGIT_URL", CRANTOGIT_URL),
+        crantogit_url=env.get("CRANTOGIT_URL", "").strip() or DEFAULT_CRANTOGIT_URL,
         org_min_r_share=float(env.get("ORG_MIN_R_SHARE", "0.5")),
         kafka_bootstrap_servers=env.get("KAFKA_BOOTSTRAP_SERVERS", "").strip() or None,
         kafka_topic=env.get("KAFKA_TOPIC", "").strip() or "github_repo_updates",
+        watchlist_topic=env.get("WATCHLIST_TOPIC", "").strip() or "github_repo_list",
         events_jsonl=_bool(env.get("EVENTS_JSONL"), True),
     )
     problems = []

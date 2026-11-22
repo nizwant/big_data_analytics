@@ -60,7 +60,7 @@ def test_data_dir_comes_from_env_file(tmp_path, monkeypatch):
     monkeypatch.delenv("DATA_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "collected"
-    (tmp_path / ".env").write_text(f"GITHUB_TOKEN=x\nDATA_DIR={target}  # outside OneDrive\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(f"GITHUB_TOKEN=x\nDATA_DIR={target}  # inline comment\n", encoding="utf-8")
     assert check_run.resolve_data_dir(["check_run.py"]) == target
 
 

@@ -68,15 +68,24 @@ def _repo_name(record: dict) -> str | None:
 
 
 class KafkaSink:
-    """Sends each record as JSON to one Kafka topic, keyed by `event.repo.name`.
+    """Sends each record as JSON to one Kafka topic, keyed by `event.repo.name` (or by `key_of`).
 
     write() returns only after the broker confirmed every message (acks=all), so the caller
     commits state only for delivered events. A message larger than the broker accepts is
     logged and dropped instead of blocking that timeline forever.
     """
 
-    def __init__(self, bootstrap_servers: str, topic: str, *, producer=None, flush_timeout_s: float = 20.0):
+    def __init__(
+        self,
+        bootstrap_servers: str,
+        topic: str,
+        *,
+        producer=None,
+        flush_timeout_s: float = 20.0,
+        key_of: Callable[[dict], str | None] = _repo_name,
+    ):
         self.topic = topic
+        self.key_of = key_of
         self.flush_timeout_s = flush_timeout_s
         if producer is None:
             producer = Producer(
@@ -119,7 +128,7 @@ class KafkaSink:
 
         sent = 0
         for record in records:
-            key = _repo_name(record)
+            key = self.key_of(record)
             value = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             if self._produce(key, value, on_delivery):
                 sent += 1
