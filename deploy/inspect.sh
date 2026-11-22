@@ -18,19 +18,28 @@ kafka() { "${DC[@]}" exec -T kafka "$KAFKA_BIN/$1" --bootstrap-server "$BOOTSTRA
 section "HDFS: datanodes"
 "${DC[@]}" exec -T namenode hdfs dfsadmin -report 2>/dev/null | grep -E "^Live datanodes|^Hostname|^DFS Used:|^Num of Blocks" || echo "(namenode not reachable)"
 
-section "HDFS: /data (directories; finalized files per directory, in-progress hidden)"
-"${DC[@]}" exec -T namenode hdfs dfs -ls -R /data 2>/dev/null | grep -v inprogress | awk '
-  $1 ~ /^d/ { dirs[$NF] = 1; next }
-  { d = $NF; sub("/[^/]*$", "", d); files[d]++; bytes[d] += $5 }
-  END {
-    for (d in dirs) {
-      if (files[d]) printf "%s  [%d files, %.1f KB]\n", d, files[d], bytes[d] / 1024
-      else print d
-    }
-  }' | sort
+section "HDFS: directories (finalized files per directory, in-progress hidden)"
+for root in /data /airflow/logs; do
+  if ! "${DC[@]}" exec -T namenode hdfs dfs -test -d "$root" 2>/dev/null; then
+    echo "$root  (missing; run deploy/hdfs_init.sh)"
+    continue
+  fi
+  "${DC[@]}" exec -T namenode hdfs dfs -ls -R "$root" 2>/dev/null | grep -v inprogress | awk -v root="$root" '
+    $1 ~ /^d/ { dirs[$NF] = 1; next }
+    { d = $NF; sub("/[^/]*$", "", d); files[d]++; bytes[d] += $5 }
+    END {
+      dirs[root] = 1
+      for (d in dirs) {
+        if (files[d]) printf "%s  [%d files, %.1f KB]\n", d, files[d], bytes[d] / 1024
+        else print d
+      }
+    }' | sort
+done
 
 section "HDFS: size per directory (data size, size with replication)"
-"${DC[@]}" exec -T namenode hdfs dfs -du -h /data/raw /data/clean /airflow 2>/dev/null
+for dir in /data/raw /data/clean /airflow/logs; do
+  "${DC[@]}" exec -T namenode hdfs dfs -du -h "$dir" 2>/dev/null | sed 's/^/  /' | grep . || echo "$dir  (missing or empty)"
+done
 
 section "Kafka: topics"
 kafka kafka-topics.sh --describe | grep -E "^Topic: [^_]" | awk '{print $2, "partitions=" $6, "replication=" $8}'
