@@ -225,6 +225,37 @@ services:
     volumes:
       - ./example_data:/data:ro
 
+  # GitHub Events API poller (stream B): every new public event once, as JSON, to the topic
+  # github_repo_updates (key: repository name). Needs poller/.env with GITHUB_TOKEN, so it starts
+  # only with --profile github. State (ETags, seen event ids) lives in POLLER_DATA_DIR.
+  github-poller:
+    profiles: [github]
+    build: ./poller
+    image: bigdata/github-poller
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    env_file:
+      - path: ./poller/.env
+        required: false
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      KAFKA_TOPIC: github_repo_updates
+      DATA_DIR: /data
+      WATCHLIST_PATH: ${POLLER_WATCHLIST_PATH:-/data/watchlist.csv}
+      # Daily JSONL copy of the events (about 1.3 GB/day); on for the 24 h measurement.
+      EVENTS_JSONL: ${POLLER_EVENTS_JSONL:-false}
+    volumes:
+      - ${POLLER_DATA_DIR:-poller-data}:/data
+    healthcheck:
+      # The global track logs a request at least every 60 s.
+      test: ["CMD-SHELL", "find /data/logs -name 'requests-*.jsonl' -mmin -5 | grep -q ."]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
 volumes:
   kafka-data:
   hdfs-namenode:
@@ -232,3 +263,4 @@ volumes:
   hdfs-datanode2:
   hdfs-datanode3:
   cassandra-data:
+  poller-data:

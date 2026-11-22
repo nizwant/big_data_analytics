@@ -31,10 +31,10 @@ class Pause:
         self.clock = clock or Clock()
         self.until = 0.0
 
-    def extend(self, until: float) -> None:
+    def extend(self, until: float, reason: str = "rate limited") -> None:
         if until > self.until:
             self.until = until
-            log.warning("rate limited: pausing all polling for %.0f s", until - self.clock.now())
+            log.warning("%s: pausing all polling for %.0f s", reason, until - self.clock.now())
 
     async def wait(self) -> None:
         while (delay := self.until - self.clock.now()) > 0:

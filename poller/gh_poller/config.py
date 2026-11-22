@@ -37,6 +37,10 @@ class Config:
     # Watch-list build (python -m gh_poller.watchlist)
     crantogit_url: str = CRANTOGIT_URL
     org_min_r_share: float = 0.5
+    # Outputs: Kafka when KAFKA_BOOTSTRAP_SERVERS is set, daily JSONL files when EVENTS_JSONL is on
+    kafka_bootstrap_servers: str | None = None
+    kafka_topic: str = "github_repo_updates"
+    events_jsonl: bool = True
 
     @property
     def events_dir(self) -> Path:
@@ -76,6 +80,9 @@ def load_config(env_file: str | None = ".env") -> Config:
         api_url=env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
         crantogit_url=env.get("CRANTOGIT_URL", CRANTOGIT_URL),
         org_min_r_share=float(env.get("ORG_MIN_R_SHARE", "0.5")),
+        kafka_bootstrap_servers=env.get("KAFKA_BOOTSTRAP_SERVERS", "").strip() or None,
+        kafka_topic=env.get("KAFKA_TOPIC", "").strip() or "github_repo_updates",
+        events_jsonl=_bool(env.get("EVENTS_JSONL"), True),
     )
     problems = []
     if cfg.global_min_interval_s < 60 or cfg.tier1_interval_s < 60:
@@ -88,6 +95,8 @@ def load_config(env_file: str | None = ".env") -> Config:
         problems.append("ORG_MIN_R_SHARE must be between 0 and 1")
     if not 1 <= cfg.global_max_pages <= 3 or not 1 <= cfg.watchlist_max_pages <= 3:
         problems.append("GLOBAL_MAX_PAGES and WATCHLIST_MAX_PAGES must be 1-3 (GitHub serves at most 300 events)")
+    if not cfg.kafka_bootstrap_servers and not cfg.events_jsonl:
+        problems.append("no output: set KAFKA_BOOTSTRAP_SERVERS or EVENTS_JSONL=true")
     if problems:
         raise SystemExit("Invalid configuration: " + "; ".join(problems))
     return cfg

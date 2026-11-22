@@ -21,6 +21,8 @@ The stack includes:
 
 - **Flink** 1.20.3 with PyFlink (1 JobManager + 1 TaskManager, 3 slots), UI at `<host>:8081`. `flink-cran-logs-job` (`src/pyflink/cran_logs_ingest.py`) reads `cran_mirror_logs` and writes: every raw line as text to `hdfs://namenode:8020/data/raw/cran_mirror_logs/dt=YYYY-MM-DD/hr=HH` (by arrival time); every parsed and valid record to the `cran_mirror_logs_clean` topic (Avro, wire format of the Confluent registry) and as Parquet to `/data/clean/cran_mirror_logs/dt=…/hr=…` (by event time); and every rejected line, with a `reject_reason`, as Parquet to `/data/raw/cran_mirror_logs_bad`. A line is rejected when it does not parse (`unparseable`), the status or method is outside the schema (`invalid_status`, `invalid_method`), or the event time is more than 5 minutes after (`future_timestamp`) or more than 7 days before (`stale_timestamp`) the Kafka arrival time (`MAX_FUTURE_SKEW_S` and `MAX_AGE_DAYS`). Files are finalized on checkpoint (every 60 s). `flink-cran-package-downloads-job` (`src/pyflink/cran_package_downloads.py`) reads `cran_mirror_logs_clean` and writes `cran_mirror_package_downloads` (keyed by `package_name`, so all downloads of a package go to the same partition) and the same records as Parquet to `/data/clean/cran_mirror_package_downloads/dt=…/hr=…` (by event time): only requests for a package file (`<name>_<version>.tar.gz|tgz|zip`) are kept, with `package_name`, `package_version`, `artifact_type` (`tar.gz`, `tgz`, `zip`) and `target_system` (`windows` for `/bin/windows` zips, `macos` for `/bin/macosx` tgz, `source` for `.tar.gz` under `/src/contrib` or `/contrib/main`, which are platform independent) extracted from the path. The path, protocol and byte count are dropped, and the status becomes `outcome`: `SUCCESS` below 400, otherwise `FAILURE`. The job fails and restarts until the topic exists, so run `deploy/init.sh` after the first start.
 
+- **GitHub poller** (`poller/`, Compose service `github-poller`, profile `github`) polls the GitHub Events API: the global public feed and the timelines of repositories behind CRAN packages. Every new event goes once, as JSON, to the topic `github_repo_updates`, keyed by the repository name (`owner/repo`); the value is `{"fetched_at", "track", "endpoint", "packages", "event"}` with the raw GitHub event in `event`. Delivery is at least once, so consumers deduplicate on `event.id`. The service needs `poller/.env` with `GITHUB_TOKEN` (copy `poller/.env.example`); its state (ETags, seen event ids, watch-list) lives in `POLLER_DATA_DIR`. Details: [poller/README.md](poller/README.md).
+
 The Hadoop image is published only for amd64, so on Apple Silicon it runs under emulation.
 
 **Dev** (also starts the fake log generator, which sends about 4 events/s to `cran_mirror_logs` topic):
@@ -41,6 +43,16 @@ sudo chown -R 999:999 /srv/bigdata/cassandra
 docker compose --env-file deploy/prod.env up -d    # or deploy/stage.env
 deploy/init.sh --env-file deploy/prod.env
 ```
+
+GitHub poller (needs the topics from `deploy/init.sh`, and `poller/.env` with the token of the machine account):
+
+```sh
+sudo mkdir -p /srv/bigdata/poller && sudo chown 1000:1000 /srv/bigdata/poller
+docker compose --env-file deploy/prod.env --profile github run --rm github-poller python -m gh_poller.watchlist   # watch-list, ~2,800 API calls the first time
+docker compose --env-file deploy/prod.env --profile github up -d --build github-poller
+```
+
+In dev, `docker compose --profile dev --profile github up -d --build` starts it with the rest; `POLLER_WATCHLIST_PATH=/app/watchlist.dev.csv` limits it to 12 organisations.
 
 `deploy/init.sh` runs these scripts in order. Each one waits for its service, is safe to re-run, and passes any arguments through to `docker compose`:
 
@@ -67,3 +79,6 @@ docker compose exec cassandra cqlsh -e "describe keyspace cran_analytics"
 | `CASSANDRA_MAX_HEAP` | `1G` | Cassandra JVM max heap |
 | `BIND_ADDRESS` | `127.0.0.1` | Host interface for published ports (9092, 9042, 9870, 8081, 8085) |
 | `KAFKA_EXTERNAL_HOST` | `localhost` | Host advertised to clients outside Docker |
+| `POLLER_DATA_DIR` | `poller-data` volume | GitHub poller state, watch-list and logs |
+| `POLLER_WATCHLIST_PATH` | `/data/watchlist.csv` | Watch-list inside the poller container |
+| `POLLER_EVENTS_JSONL` | `false` | Also write the events to daily JSONL files in `POLLER_DATA_DIR` (about 1.3 GB/day) |

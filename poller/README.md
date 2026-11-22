@@ -1,6 +1,7 @@
 # GitHub Events poller (stream B)
 
-Polls the GitHub Events API and writes each new public event once to daily JSONL files (Kafka in v2).
+Polls the GitHub Events API and sends each new public event once to the Kafka topic `github_repo_updates`
+and/or to daily JSONL files.
 
 | Track | Source | Purpose |
 |---|---|---|
@@ -18,10 +19,12 @@ cp .env.example .env              # then set GITHUB_TOKEN
 python -m gh_poller.watchlist     # build DATA_DIR/watchlist.csv (about 2,800 API lookups the first time)
 python -m gh_poller               # Ctrl+C to stop
 python -m pytest                  # mocked HTTP; tests marked live call GitHub when GITHUB_TOKEN is set
-python scripts/check_run.py       # run report: statuses, rate limits, duplicates, volume, delays
+python scripts/check_run.py       # run report: statuses, rate limits, duplicates, volume, delays (needs EVENTS_JSONL)
 ```
 
 For development, `WATCHLIST_PATH=./watchlist.dev.csv` polls only the 12 tier-1 organisations.
+To send to the local stack's Kafka from outside Docker, set `KAFKA_BOOTSTRAP_SERVERS=localhost:9092`.
+In the stack it runs as the Compose service `github-poller` (see the main README).
 Offline, skip the live tests with `python -m pytest -m "not live"`.
 
 ## Configuration
@@ -37,6 +40,9 @@ Environment variables or `.env` (all settings: `.env.example`).
 | `TIER2_INTERVAL_S` | automatic | Tier-2 poll interval (≥ 900); automatic: tier-2 timelines / `TIER2_BUDGET_PER_H`, in whole hours |
 | `TIER2_BUDGET_PER_H` | `3500` | Cap on paid tier-2 page requests per hour (304s are free) |
 | `ORG_MIN_R_SHARE` | `0.5` | Poll an organisation's timeline only if this share of its public repos are R packages |
+| `KAFKA_BOOTSTRAP_SERVERS` | empty | Kafka brokers; empty: no Kafka output (in Compose: `kafka:19092`) |
+| `KAFKA_TOPIC` | `github_repo_updates` | Topic for the events (created by `deploy/kafka_init.sh`) |
+| `EVENTS_JSONL` | `true` | Also write the events to `DATA_DIR/events/` (in Compose: `POLLER_EVENTS_JSONL`, default `false`) |
 
 ## Watch-list
 
@@ -51,9 +57,13 @@ refreshes `watchlist.csv` (e.g. Airflow) should write a temporary file and renam
 
 ## Output
 
+Kafka: topic `github_repo_updates`, key `event.repo.name` (events of one repository stay in order),
+value the JSON record below. A message is confirmed (`acks=all`, idempotent producer) before its
+event counts as written; events larger than the broker accepts (1 MB) are logged and dropped.
+
 ```
 DATA_DIR/
-  events/YYYY-MM-DD.jsonl          one line per new event
+  events/YYYY-MM-DD.jsonl          one line per new event (EVENTS_JSONL)
   logs/requests-YYYY-MM-DD.jsonl   one line per poll
   state.sqlite3                    ETags, poll schedule, ids of written events
 ```
@@ -80,3 +90,6 @@ DATA_DIR/
 - **Errors:** `5xx` and network errors are retried (2, 4, 8 s); other errors back off the timeline for
   5 min (on the global feed `404`/`410` too); `404`/`410` on the watch-list is rechecked after 7 days;
   `401` stops the poller.
+- **Output failures:** if Kafka (or the JSONL file) does not confirm the events, nothing is committed and all
+  polling pauses for 60 s; the next poll of that timeline fetches the same events again.
+- **Stop:** `SIGTERM` (`docker stop`) stops like Ctrl+C.

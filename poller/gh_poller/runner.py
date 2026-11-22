@@ -18,7 +18,7 @@ from .config import Config
 from .github import PollResult, Unauthorized, build_headers, poll
 from .limits import Budget, Clock, Pause, RequestGate, TokenBucket
 from .scheduler import ERROR_BACKOFF_S, Scheduler
-from .sink import DailyJsonl, make_record
+from .sink import DailyJsonl, EventSinks, KafkaSink, SinkError, make_record
 from .state import State
 from .watchlist import Watchlist, WatchlistError, load_watchlist
 
@@ -30,6 +30,9 @@ GLOBAL_ENDPOINT = "/events"
 KEEP_S = {"global": 2 * 86400, "watchlist": 31 * 86400}
 PRUNE_EVERY_S = 3600
 WATCHLIST_CHECK_S = 60  # how often the watch-list file's modification time is checked
+# After a failed delivery (Kafka down, disk full) all polling pauses this long. The events stay
+# uncommitted, so the next poll of that timeline fetches them again.
+SINK_RETRY_S = 60
 
 
 @dataclass
@@ -37,7 +40,7 @@ class Context:
     cfg: Config
     client: httpx.AsyncClient
     state: State
-    events_out: DailyJsonl
+    events_out: DailyJsonl | EventSinks
     requests_log: DailyJsonl
     pause: Pause
     clock: Clock = field(default_factory=Clock)
@@ -104,18 +107,25 @@ async def poll_and_store(
     day = fetched_at[:10]
 
     # No awaits from here to the commit, so tasks cannot interleave between dedup and commit.
-    # Order: write events first, then commit state. A crash in between re-sends a few events
-    # after restart (at-least-once); downstream deduplicates on event id.
+    # Order: deliver events first (Kafka confirms them), then commit state. A crash in between
+    # re-sends a few events after restart (at-least-once); downstream deduplicates on event id.
     new = ctx.state.filter_new(res.events)
     unique = len({str(e.get("id")) for e in res.events})
-    ctx.events_out.write(
-        (
-            make_record(e, track=track, endpoint=endpoint, fetched_at=fetched_at, packages_for=ctx.watchlist.packages_for)
-            for e in reversed(new)
-        ),
-        day=day,
-    )
-    if res.status in (200, 304):
+    sink_error = None
+    try:
+        ctx.events_out.write(
+            [
+                make_record(e, track=track, endpoint=endpoint, fetched_at=fetched_at, packages_for=ctx.watchlist.packages_for)
+                for e in reversed(new)
+            ],
+            day=day,
+        )
+    except SinkError as exc:
+        sink_error = str(exc)
+        log.error("events of %s not delivered: %s", endpoint, exc)
+        ctx.pause.extend(now + SINK_RETRY_S, reason="output failed")
+    # After a failed delivery nothing is committed: the ETag and the event ids stay as they were.
+    if sink_error is None and res.status in (200, 304):
         ctx.state.commit_poll(
             endpoint,
             etag=res.etag,
@@ -124,7 +134,7 @@ async def poll_and_store(
             keep_s=KEEP_S[track],
             now=now,
         )
-    elif res.dead:
+    elif sink_error is None and res.dead:
         ctx.state.record_dead(endpoint, res.status, now=now)
     quota_pause = ctx.budget.update(res.rate_remaining, res.rate_reset)
     if res.pause_until or quota_pause:
@@ -147,7 +157,7 @@ async def poll_and_store(
                 # Written before (earlier poll or other track). For the global feed, 0 means this
                 # poll did not reach back to the previous one, so events in between may be missing.
                 "known": unique - len(new),
-                "new_events": len(new),
+                "new_events": 0 if sink_error else len(new),
                 "rate_remaining": res.rate_remaining,
                 "rate_limited": res.pause_until is not None,
                 "poll_interval_s": res.poll_interval_s,
@@ -156,7 +166,7 @@ async def poll_and_store(
                 "late_s": round(late_s, 1) if late_s is not None else None,
                 "delay_p50_s": round(statistics.median(delays), 1) if delays else None,
                 "delay_max_s": round(max(delays), 1) if delays else None,
-                "error": res.error,
+                "error": "; ".join(x for x in (res.error, sink_error) if x) or None,
             }
         ],
         day=day,
@@ -165,12 +175,12 @@ async def poll_and_store(
         "%-32s status=%s new=%d remaining=%s next=%.0fs%s",
         endpoint,
         res.status,
-        len(new),
+        0 if sink_error else len(new),
         res.rate_remaining,
         interval,
         f" error={res.error}" if res.error else "",
     )
-    return res, len(new), interval
+    return res, 0 if sink_error else len(new), interval
 
 
 async def endpoint_loop(ctx: Context, endpoint: str, track: str, max_pages: int, min_interval_s: float) -> None:
@@ -278,6 +288,7 @@ async def run_until_first_error(coros: list) -> None:
 async def run(cfg: Config, clock: Clock | None = None) -> None:
     clock = clock or Clock()
     state = State(cfg.db_path)
+    events_out = open_outputs(cfg)
     try:
         async with httpx.AsyncClient(
             headers=build_headers(cfg.github_token, cfg.user_agent),
@@ -289,7 +300,7 @@ async def run(cfg: Config, clock: Clock | None = None) -> None:
                 cfg=cfg,
                 client=client,
                 state=state,
-                events_out=DailyJsonl(cfg.events_dir),
+                events_out=events_out,
                 requests_log=DailyJsonl(cfg.logs_dir, prefix="requests-"),
                 pause=pause,
                 clock=clock,
@@ -312,10 +323,32 @@ async def run(cfg: Config, clock: Clock | None = None) -> None:
             if cfg.global_track_enabled:
                 tasks.append(endpoint_loop(ctx, GLOBAL_ENDPOINT, "global", cfg.global_max_pages, cfg.global_min_interval_s))
             log.info(
-                "global track %s; data in %s",
+                "global track %s; events to %s; state and logs in %s",
                 "on" if cfg.global_track_enabled else "off",
+                describe_outputs(cfg),
                 cfg.data_dir.resolve(),
             )
             await run_until_first_error(tasks)
     finally:
+        events_out.close()
         state.close()
+
+
+def open_outputs(cfg: Config) -> EventSinks:
+    sinks: list = []
+    if cfg.kafka_bootstrap_servers:
+        kafka = KafkaSink(cfg.kafka_bootstrap_servers, cfg.kafka_topic)
+        kafka.check_topic()
+        sinks.append(kafka)
+    if cfg.events_jsonl:
+        sinks.append(DailyJsonl(cfg.events_dir))
+    return EventSinks(sinks)
+
+
+def describe_outputs(cfg: Config) -> str:
+    out = []
+    if cfg.kafka_bootstrap_servers:
+        out.append(f"Kafka topic {cfg.kafka_topic} at {cfg.kafka_bootstrap_servers}")
+    if cfg.events_jsonl:
+        out.append(f"JSONL in {cfg.events_dir.resolve()}")
+    return " and ".join(out)

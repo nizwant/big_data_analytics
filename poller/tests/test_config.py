@@ -7,7 +7,10 @@ from gh_poller.config import load_config
 def env(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # no .env here: the test must not read a real token
     monkeypatch.setenv("GITHUB_TOKEN", "t")
-    for name in ("TIER2_INTERVAL_S", "TIER2_BUDGET_PER_H", "TIER1_INTERVAL_S", "WATCHLIST_PATH", "DATA_DIR"):
+    for name in (
+        "TIER2_INTERVAL_S", "TIER2_BUDGET_PER_H", "TIER1_INTERVAL_S", "WATCHLIST_PATH", "DATA_DIR",
+        "KAFKA_BOOTSTRAP_SERVERS", "KAFKA_TOPIC", "EVENTS_JSONL",
+    ):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -25,4 +28,20 @@ def test_tier2_interval_is_automatic_unless_set(env):
 def test_invalid_settings_stop_the_start(env, name, value):
     env.setenv(name, value)
     with pytest.raises(SystemExit, match=name):
+        load_config()
+
+
+def test_outputs_default_to_jsonl_and_the_team_topic(env):
+    cfg = load_config()
+    assert cfg.events_jsonl and cfg.kafka_bootstrap_servers is None
+    assert cfg.kafka_topic == "github_repo_updates"  # created by deploy/kafka_init.sh
+    env.setenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092")
+    env.setenv("EVENTS_JSONL", "false")
+    cfg = load_config()
+    assert cfg.kafka_bootstrap_servers == "kafka:19092" and not cfg.events_jsonl
+
+
+def test_no_output_stops_the_start(env):
+    env.setenv("EVENTS_JSONL", "false")
+    with pytest.raises(SystemExit, match="no output"):
         load_config()

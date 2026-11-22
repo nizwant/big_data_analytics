@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Wipes the dev environment: stops and removes all containers and deletes all
-# data volumes (Kafka, HDFS, Cassandra), including stale volumes from services
+# data volumes (Kafka, HDFS, Cassandra, GitHub poller state), including stale volumes from services
 # that no longer exist in docker-compose.yml. Dev only: it uses the default
 # named volumes and never touches the /srv/bigdata directories of stage/prod.
 # Afterwards, start fresh with:
@@ -8,7 +8,7 @@
 #
 # Usage: deploy/dev_clean.sh [-y] [--images]
 #   -y        skip the confirmation prompt
-#   --images  also remove the images built by compose (bigdata/pyflink, log generator)
+#   --images  also remove the images built by compose (bigdata/pyflink, log generator, GitHub poller)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -31,7 +31,7 @@ if [ "$YES" -ne 1 ]; then
   [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 fi
 
-DOWN_ARGS=(--profile dev down --volumes --remove-orphans)
+DOWN_ARGS=(--profile dev --profile github down --volumes --remove-orphans)
 [ "$IMAGES" -eq 1 ] && DOWN_ARGS+=(--rmi local)
 docker compose "${DOWN_ARGS[@]}"
 
