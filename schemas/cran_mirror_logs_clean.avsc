@@ -1,0 +1,49 @@
+{
+  "type": "record",
+  "name": "CranMirrorLogClean",
+  "namespace": "cran.mirror",
+  "doc": "One validated CRAN mirror access-log record, sent to the Kafka topic cran_mirror_logs_clean (Avro, registered in the schema registry as subject cran_mirror_logs_clean-value) and stored as Parquet under /data/clean/cran_mirror_logs. Produced by src/pyflink/cran_logs_ingest.py from the Apache common log lines in cran_mirror_logs. Avro cannot express value constraints, so the job enforces them: http_method must be one of ALLOWED_METHODS and status must be 100-599 (STATUS_MIN and STATUS_MAX).",
+  "fields": [
+    {
+      "name": "event_ts",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "Time of the request, taken from the log line (UTC)."
+    },
+    {
+      "name": "arrival_ts",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "Time the raw line arrived in Kafka (record timestamp, UTC)."
+    },
+    {
+      "name": "ip",
+      "type": "string",
+      "doc": "Client address, IPv4 or IPv6."
+    },
+    {
+      "name": "http_method",
+      "type": "string",
+      "doc": "HTTP method in upper case, for example GET."
+    },
+    {
+      "name": "path",
+      "type": "string",
+      "doc": "Requested path, including any query string."
+    },
+    {
+      "name": "protocol",
+      "type": "string",
+      "doc": "For example HTTP/1.1."
+    },
+    {
+      "name": "status",
+      "type": "int",
+      "doc": "HTTP response status code (100-599)."
+    },
+    {
+      "name": "bytes_sent",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Response size in bytes; null when the log has '-'."
+    }
+  ]
+}

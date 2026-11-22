@@ -1,0 +1,53 @@
+{
+  "type": "record",
+  "name": "CranMirrorPackageDownload",
+  "namespace": "cran.mirror",
+  "doc": "One download of an R package artifact from the CRAN mirror, as sent to the Kafka topic cran_mirror_package_downloads (Avro, subject cran_mirror_package_downloads-value). Produced by src/pyflink/cran_package_downloads.py from cran_mirror_logs_clean: only requests for a package file (<name>_<version>.tar.gz, .tgz or .zip) are kept, and the path, protocol and byte count are dropped. Avro cannot express value constraints, so the job enforces: artifact_type is one of tar.gz, tgz, zip; target_system is one of windows, macos, source; outcome is SUCCESS or FAILURE.",
+  "fields": [
+    {
+      "name": "event_ts",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "Time of the request, taken from the log line (UTC)."
+    },
+    {
+      "name": "arrival_ts",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "Time the raw line arrived in Kafka (record timestamp, UTC)."
+    },
+    {
+      "name": "ip",
+      "type": "string",
+      "doc": "Client address, IPv4 or IPv6."
+    },
+    {
+      "name": "http_method",
+      "type": "string",
+      "doc": "HTTP method in upper case, for example GET."
+    },
+    {
+      "name": "package_name",
+      "type": "string",
+      "doc": "R package name from the file name, for example Ckmeans.1d.dp."
+    },
+    {
+      "name": "package_version",
+      "type": "string",
+      "doc": "Package version from the file name, for example 0.0.2-6."
+    },
+    {
+      "name": "artifact_type",
+      "type": "string",
+      "doc": "File type without the dot: tar.gz (source), tgz (macOS binary) or zip (Windows binary)."
+    },
+    {
+      "name": "target_system",
+      "type": "string",
+      "doc": "windows (/bin/windows, .zip), macos (/bin/macosx, .tgz) or source (/src/contrib or /contrib/main, .tar.gz). Source packages are platform independent, so they are not labelled linux."
+    },
+    {
+      "name": "outcome",
+      "type": "string",
+      "doc": "SUCCESS when the HTTP status is below 400 (served, including 3xx), FAILURE otherwise (client and server errors, for example 404)."
+    }
+  ]
+}

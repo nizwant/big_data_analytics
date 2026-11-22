@@ -2,13 +2,28 @@ name: bigdata
 
 x-hadoop-config: &hadoop-config
   CORE-SITE.XML_fs.defaultFS: hdfs://namenode:8020
-  HDFS-SITE.XML_dfs.replication: 1
+  HDFS-SITE.XML_dfs.replication: 2
   HDFS-SITE.XML_dfs.namenode.name.dir: file:///data/name
   HDFS-SITE.XML_dfs.datanode.data.dir: file:///data/datanode
   HDFS-SITE.XML_dfs.namenode.rpc-bind-host: 0.0.0.0
   HDFS-SITE.XML_dfs.namenode.http-bind-host: 0.0.0.0
   HDFS-SITE.XML_dfs.namenode.datanode.registration.ip-hostname-check: "false"
   HDFS-SITE.XML_dfs.permissions.enabled: "false"
+
+x-flink: &flink
+  build: ./src/pyflink
+  image: bigdata/pyflink:1.20.3
+  restart: unless-stopped
+  environment: &flink-env
+    FLINK_PROPERTIES: |
+      jobmanager.rpc.address: jobmanager
+      jobmanager.memory.process.size: 1024m
+      taskmanager.memory.process.size: 3072m
+      taskmanager.numberOfTaskSlots: 6
+      parallelism.default: 3
+      state.checkpoints.dir: hdfs://namenode:8020/flink/checkpoints
+      # Client-side HDFS setting; keep in sync with dfs.replication in x-hadoop-config.
+      flink.hadoop.dfs.replication: 2
 
 services:
   kafka:
@@ -40,6 +55,32 @@ services:
       retries: 10
       start_period: 20s
 
+  # Schemas are stored in the Kafka topic _schemas (created by deploy/kafka_init.sh),
+  # so they persist with the Kafka data and survive restarts.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.4.1
+    restart: unless-stopped
+    hostname: schema-registry
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8085:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:19092
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: _schemas
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
+      SCHEMA_REGISTRY_HEAP_OPTS: -Xms128m -Xmx384m
+    healthcheck:
+      # The image has python3 but no curl.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/subjects', timeout=5)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
   namenode:
     image: apache/hadoop:3.4.2
     platform: linux/amd64
@@ -55,31 +96,102 @@ services:
     volumes:
       - ${HDFS_NAMENODE_DIR:-hdfs-namenode}:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9870/ >/dev/null"]
+      # Healthy only once HDFS accepts writes, i.e. safe mode is off. After a restart the
+      # NameNode stays in safe mode until the DataNodes have reported their blocks, so the
+      # DataNodes must not wait for this check (they depend on service_started).
+      test: ["CMD-SHELL", "curl -sf http://localhost:9870/ >/dev/null && hdfs dfsadmin -safemode get | grep -q OFF"]
       interval: 10s
-      timeout: 10s
-      retries: 10
+      timeout: 15s
+      retries: 20
       start_period: 30s
 
-  datanode:
+  datanode1: &datanode
     image: apache/hadoop:3.4.2
     platform: linux/amd64
     restart: unless-stopped
-    hostname: datanode
+    hostname: datanode1
     command: ["hdfs", "datanode"]
     depends_on:
       namenode:
-        condition: service_healthy
+        condition: service_started
     environment:
       <<: *hadoop-config
     volumes:
-      - ${HDFS_DATANODE_DIR:-hdfs-datanode}:/data
+      - ${HDFS_DATANODE1_DIR:-hdfs-datanode1}:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9864/ >/dev/null"]
       interval: 10s
       timeout: 10s
       retries: 10
       start_period: 30s
+
+  datanode2:
+    <<: *datanode
+    hostname: datanode2
+    volumes:
+      - ${HDFS_DATANODE2_DIR:-hdfs-datanode2}:/data
+
+  datanode3:
+    <<: *datanode
+    hostname: datanode3
+    volumes:
+      - ${HDFS_DATANODE3_DIR:-hdfs-datanode3}:/data
+
+  jobmanager:
+    <<: *flink
+    hostname: jobmanager
+    command: ["jobmanager"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8081:8081"
+    depends_on:
+      namenode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  taskmanager:
+    <<: *flink
+    command: ["taskmanager"]
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+
+  # Submits the job and stays attached; if the job or JobManager dies, the container
+  # restarts and resubmits it. Fails until the topic exists (deploy/kafka_init.sh).
+  flink-cran-logs-job:
+    <<: *flink
+    command: ["flink", "run", "-m", "jobmanager:8081", "-py", "/opt/jobs/cran_logs_ingest.py"]
+    volumes:
+      - ./schemas:/opt/schemas:ro
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+
+  # Reads cran_mirror_logs_clean, so it needs the topics and schemas from deploy/init.sh.
+  flink-cran-package-downloads-job:
+    <<: *flink
+    command: ["flink", "run", "-m", "jobmanager:8081", "-py", "/opt/jobs/cran_package_downloads.py"]
+    volumes:
+      - ./schemas:/opt/schemas:ro
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
 
   cassandra:
     image: cassandra:5.0.9
@@ -116,5 +228,7 @@ services:
 volumes:
   kafka-data:
   hdfs-namenode:
-  hdfs-datanode:
+  hdfs-datanode1:
+  hdfs-datanode2:
+  hdfs-datanode3:
   cassandra-data:
