@@ -30,7 +30,7 @@ section "HDFS: /data (directories; finalized files per directory, in-progress hi
   }' | sort
 
 section "HDFS: size per directory (data size, size with replication)"
-"${DC[@]}" exec -T namenode hdfs dfs -du -h /data/raw /data/clean 2>/dev/null
+"${DC[@]}" exec -T namenode hdfs dfs -du -h /data/raw /data/clean /airflow 2>/dev/null
 
 section "Kafka: topics"
 kafka kafka-topics.sh --describe | grep -E "^Topic: [^_]" | awk '{print $2, "partitions=" $6, "replication=" $8}'

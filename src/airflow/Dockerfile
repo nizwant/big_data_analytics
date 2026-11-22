@@ -6,9 +6,16 @@ ARG PYTHON_VERSION=3.12
 FROM apache/airflow:slim-${AIRFLOW_VERSION}-python${PYTHON_VERSION}
 ARG AIRFLOW_VERSION
 ARG PYTHON_VERSION
-
 # Versions come from the constraints file of this Airflow release, i.e. the set it was
-# tested with; apache-airflow is listed so pip cannot up- or downgrade it.
+# tested with.
+ARG CONSTRAINTS=https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt
+
+# apache-airflow is listed so pip cannot up- or downgrade it.
 COPY requirements.txt /requirements.txt
-RUN pip install --no-cache-dir "apache-airflow==${AIRFLOW_VERSION}" -r /requirements.txt \
-      --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+RUN pip install --no-cache-dir "apache-airflow==${AIRFLOW_VERSION}" -r /requirements.txt --constraint "${CONSTRAINTS}"
+
+# The HDFS provider writes the task logs to HDFS. It declares hdfs[kerberos], whose
+# gssapi and krb5 packages have no Linux wheels and would need a compiler, but it only
+# imports them when [core] security = kerberos, which this stack does not use. So it
+# is installed without its dependencies; hdfs itself comes from requirements.txt.
+RUN pip install --no-cache-dir --no-deps apache-airflow-providers-apache-hdfs --constraint "${CONSTRAINTS}"

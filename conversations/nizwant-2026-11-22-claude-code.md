@@ -1,4 +1,4 @@
-# 2026-11-22 — Report review, Airflow infrastructure, slimming Airflow to one container
+# 2026-11-22 — Report review, Airflow infrastructure, slimming Airflow to one container, task logs in HDFS
 
 Conversation with Claude Code. User messages are verbatim; assistant replies are condensed. Messages that only asked for this dump are left out.
 
@@ -59,3 +59,19 @@ Two findings along the way:
 **User:** genrate me PR description
 
 **Assistant:** Drafted the description in the repo's PR template (Summary, Changes, Usage, Notes, Testing). Before writing the Testing section, started the final image against an empty throwaway Postgres to confirm it creates the schema and the admin user on a fresh database.
+
+---
+
+**User:** I think airflow logs should land in HDFS. we are doing simulation here of distributed system in docker, keep that in mind
+
+**Assistant:** Switched Airflow to remote task logging in HDFS, so the Airflow container keeps no state of its own; Postgres is the only stateful part.
+
+- Airflow 3.4 supports `hdfs://` log folders through the HDFS provider, which brought the provider back. It declares `hdfs[kerberos]` (the `gssapi`/`krb5` packages that need a compiler) but imports Kerberos only when `[core] security = kerberos`, so it is installed with `--no-deps`; the image stays at 885 MB with no build stage, and `pip check` flags only the unused `pandas`.
+- Task logs are uploaded to `/airflow/logs/...` when a task finishes, read from there by the UI, and deleted locally (`delete_local_logs`). The logs volume, `AIRFLOW_LOGS_DIR` and the stage/prod `chown` step are gone; `hdfs_init.sh` creates `/airflow/logs` and `inspect.sh` shows its size.
+- The handler and the DAGs share one connection, `webhdfs_default` (`webhdfs://airflow@namenode:9870`), which replaced `WEBHDFS_URL`; the check DAG now uses `WebHDFSHook`.
+- The first upload failed with `HdfsError: Invalid path name`: HDFS does not allow `:` in paths, and Airflow's log path contains the run ID with its timestamp. A custom `log_filename_template` turns the colons into dashes.
+- Setting `dag_processor_log_target` to `stdout` only duplicated the DAG processor's parse logs (the local file is written anyway, and Airflow cannot upload those), so it was left at the default.
+
+Verified: the check DAG succeeded, both task logs were in HDFS with no local copy left, and the REST API used by the UI returned the full log from HDFS.
+
+A teammate's commits had meanwhile changed the dev setup (one DataNode, replication 1 in dev; the `ha` profile for stage/prod; smaller heaps). Compose then wanted to recreate Kafka and the NameNode, which the host's AppArmor problem blocks, so only `airflow` was recreated (`docker compose up -d --no-deps airflow`). The unused `bigdata_airflow-logs` volume, holding only test logs, was removed.

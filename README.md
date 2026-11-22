@@ -20,7 +20,7 @@ The stack includes:
 - **Cassandra** 5.0.9 (single node, 1 GB heap) for the serving layer, published at `<host>:9042` without authentication, with the keyspace `cran_analytics` (SimpleStrategy, RF 1). The Flink and Spark jobs will add the `rt_*` and `batch_*` tables.
 
 - **Flink** 1.20.3 with PyFlink (1 JobManager + 1 TaskManager, 3 slots), UI at `<host>:8081`. `flink-cran-logs-job` (`src/pyflink/cran_logs_ingest.py`) reads `cran_mirror_logs` and writes: every raw line as text to `hdfs://namenode:8020/data/raw/cran_mirror_logs/dt=YYYY-MM-DD/hr=HH` (by arrival time); every parsed and valid record to the `cran_mirror_logs_clean` topic (Avro, wire format of the Confluent registry) and as Parquet to `/data/clean/cran_mirror_logs/dt=…/hr=…` (by event time); and every rejected line, with a `reject_reason`, as Parquet to `/data/raw/cran_mirror_logs_bad`. A line is rejected when it does not parse (`unparseable`), the status or method is outside the schema (`invalid_status`, `invalid_method`), or the event time is more than 5 minutes after (`future_timestamp`) or more than 7 days before (`stale_timestamp`) the Kafka arrival time (`MAX_FUTURE_SKEW_S` and `MAX_AGE_DAYS`). Files are finalized on checkpoint (every 60 s). `flink-cran-package-downloads-job` (`src/pyflink/cran_package_downloads.py`) reads `cran_mirror_logs_clean` and writes `cran_mirror_package_downloads` (keyed by `package_name`, so all downloads of a package go to the same partition) and the same records as Parquet to `/data/clean/cran_mirror_package_downloads/dt=…/hr=…` (by event time): only requests for a package file (`<name>_<version>.tar.gz|tgz|zip`) are kept, with `package_name`, `package_version`, `artifact_type` (`tar.gz`, `tgz`, `zip`) and `target_system` (`windows` for `/bin/windows` zips, `macos` for `/bin/macosx` tgz, `source` for `.tar.gz` under `/src/contrib` or `/contrib/main`, which are platform independent) extracted from the path. The path, protocol and byte count are dropped, and the status becomes `outcome`: `SUCCESS` below 400, otherwise `FAILURE`. The job fails and restarts until the topic exists, so run `deploy/init.sh` after the first start.
-- **Airflow** 3.4.0 for the batch layer, UI and REST API at `<host>:8080` (dev login `airflow` / `airflow`). One container, `airflow`, runs the api-server, the scheduler (which also runs the tasks, LocalExecutor), the DAG processor and the triggerer; if one of them dies the container exits and Docker restarts it. On every start it migrates the metadata database and creates the admin user (both idempotent). The database is a separate Postgres 16 (`airflow-postgres`, not published). DAGs live in `src/airflow/dags`, mounted read-only; new files show up within a minute and new DAGs start paused. The image (`src/airflow/Dockerfile`, about 0.9 GB) is Airflow's slim image plus the `hdfs` (WebHDFS) and `confluent-kafka` clients, with versions pinned by Airflow's constraints file. DAGs read the endpoints from the environment, like the Flink jobs: `WEBHDFS_URL` (`http://namenode:9870`) and `KAFKA_BOOTSTRAP_SERVERS` (`kafka:19092`). The DAG `stack_connectivity_check` (manual trigger only) writes, reads and deletes a file in HDFS and lists the Kafka topics, to check the wiring after a deploy:
+- **Airflow** 3.4.0 for the batch layer, UI and REST API at `<host>:8080` (dev login `airflow` / `airflow`). One container, `airflow`, runs the api-server, the scheduler (which also runs the tasks, LocalExecutor), the DAG processor and the triggerer; if one of them dies the container exits and Docker restarts it. On every start it migrates the metadata database and creates the admin user (both idempotent). The database is a separate Postgres 16 (`airflow-postgres`, not published). DAGs live in `src/airflow/dags`, mounted read-only; new files show up within a minute and new DAGs start paused. Task logs are written to HDFS under `/airflow/logs/dag_id=…/run_id=…/task_id=…/attempt=N.log` when a task finishes, read from there by the UI, and deleted from the container, which therefore keeps no state; the colons of the run ID become dashes in the path, because HDFS does not allow `:`. Only the log of a task that is still running is served from the container, and the DAG processor's parse logs stay inside the container (Airflow cannot upload them). The image (`src/airflow/Dockerfile`, about 0.9 GB) is Airflow's slim image plus the `hdfs` (WebHDFS) and `confluent-kafka` clients and the HDFS provider for the logs, with versions pinned by Airflow's constraints file. DAGs reach HDFS through the `webhdfs_default` connection (`webhdfs://airflow@namenode:9870`, also used for the logs; for example `WebHDFSHook().get_conn()`) and Kafka through `KAFKA_BOOTSTRAP_SERVERS` (`kafka:19092`), like the Flink jobs. The DAG `stack_connectivity_check` (manual trigger only) writes, reads and deletes a file in HDFS and lists the Kafka topics, to check the wiring after a deploy:
 
   ```sh
   docker compose exec airflow airflow dags trigger stack_connectivity_check
@@ -37,13 +37,12 @@ deploy/init.sh    # create topics, HDFS dirs and keyspace (idempotent)
 
 To wipe the dev environment (containers and all Kafka, HDFS, Cassandra and Airflow data), run `deploy/dev_clean.sh` (`-y` skips the prompt, `--images` also removes the built images). It only touches the dev named volumes, never the stage/prod directories.
 
-**Stage/prod** (data in `/srv/bigdata/{kafka,hdfs,cassandra,airflow}`; Kafka and Hadoop run as uid 1000, Cassandra and Postgres as uid 999, Airflow as uid 50000; Postgres sets the owner of its directory itself):
+**Stage/prod** (data in `/srv/bigdata/{kafka,hdfs,cassandra,airflow}`; Kafka and Hadoop run as uid 1000, Cassandra as uid 999; the Airflow metadata database's Postgres sets the owner of its directory itself, and Airflow's logs go to HDFS):
 
 ```sh
-sudo mkdir -p /srv/bigdata/kafka /srv/bigdata/hdfs/namenode /srv/bigdata/hdfs/datanode{1,2,3} /srv/bigdata/cassandra /srv/bigdata/airflow/{postgres,logs}
+sudo mkdir -p /srv/bigdata/kafka /srv/bigdata/hdfs/namenode /srv/bigdata/hdfs/datanode{1,2,3} /srv/bigdata/cassandra /srv/bigdata/airflow/postgres
 sudo chown -R 1000:1000 /srv/bigdata/kafka /srv/bigdata/hdfs
 sudo chown -R 999:999 /srv/bigdata/cassandra
-sudo chown -R 50000:0 /srv/bigdata/airflow/logs
 docker compose --env-file deploy/prod.env --env-file deploy/prod.secrets.env up -d    # or deploy/stage.*
 deploy/init.sh --env-file deploy/prod.env
 ```
@@ -64,7 +63,7 @@ Set them before the first start: Postgres takes `AIRFLOW_DB_PASSWORD` only when 
 
 - `deploy/kafka_init.sh` creates the Kafka topics (3 partitions, RF 1) and the registry's `_schemas` topic.
 - `deploy/schema_init.sh` waits for the schema registry and registers the Avro schemas in `schemas/`.
-- `deploy/hdfs_init.sh` waits for HDFS to leave safe mode, then creates `/data/raw/{cran_mirror_logs,cran_mirror_logs_bad,github_repo_updates,github_repo_list}` and `/data/clean/{cran_mirror_logs,cran_mirror_package_downloads}`.
+- `deploy/hdfs_init.sh` waits for HDFS to leave safe mode, then creates `/data/raw/{cran_mirror_logs,cran_mirror_logs_bad,github_repo_updates,github_repo_list}` and `/data/clean/{cran_mirror_logs,cran_mirror_package_downloads}`, plus `/airflow/logs` for the Airflow task logs.
 - `deploy/cassandra_init.sh` creates the `cran_analytics` keyspace.
 
 In dev the log generator starts before its topic exists and buffers events until `deploy/init.sh` creates it.
@@ -85,7 +84,6 @@ docker compose exec airflow airflow dags list-import-errors
 | `CASSANDRA_DATA_DIR` | `cassandra-data` volume | Cassandra data path |
 | `CASSANDRA_MAX_HEAP` | `512M` | Cassandra JVM max heap |
 | `AIRFLOW_POSTGRES_DIR` | `airflow-postgres` volume | Airflow metadata database path |
-| `AIRFLOW_LOGS_DIR` | `airflow-logs` volume | Airflow task and component logs |
 | `AIRFLOW_ADMIN_USER`, `AIRFLOW_ADMIN_PASSWORD` | `airflow`, `airflow` | Airflow UI admin, created on first start |
 | `AIRFLOW_DB_PASSWORD` | `airflow` | Password of the Airflow metadata database |
 | `AIRFLOW_FERNET_KEY` | empty (no encryption) | Encryption key for connection passwords stored in the database |

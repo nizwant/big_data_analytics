@@ -1,10 +1,10 @@
 """Checks that Airflow can reach HDFS and Kafka. Triggered manually, no schedule.
 
-- hdfs: writes, reads back and deletes a file through WebHDFS, then lists /data;
-- kafka: lists the topics.
+- hdfs: writes, reads back and deletes a file through WebHDFS (the webhdfs_default
+  connection, also used for the task logs), then lists /data;
+- kafka: lists the topics (KAFKA_BOOTSTRAP_SERVERS from the environment).
 
-The endpoints come from the environment of the airflow service in docker-compose.yml.
-Run it after deploying:
+Both are set on the airflow service in docker-compose.yml. Run it after deploying:
     docker compose exec airflow airflow dags trigger stack_connectivity_check
 """
 
@@ -12,7 +12,6 @@ import os
 
 from airflow.sdk import dag, task
 
-WEBHDFS_URL = os.environ.get("WEBHDFS_URL", "http://namenode:9870")
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092")
 HDFS_PROBE_PATH = "/tmp/airflow_connectivity_check.txt"
 
@@ -21,9 +20,9 @@ HDFS_PROBE_PATH = "/tmp/airflow_connectivity_check.txt"
 def stack_connectivity_check():
     @task
     def hdfs() -> list[str]:
-        from hdfs import InsecureClient
+        from airflow.providers.apache.hdfs.hooks.webhdfs import WebHDFSHook
 
-        client = InsecureClient(WEBHDFS_URL, user="airflow")
+        client = WebHDFSHook().get_conn()
         client.write(HDFS_PROBE_PATH, data=b"ok", overwrite=True)
         with client.read(HDFS_PROBE_PATH) as reader:
             content = reader.read()

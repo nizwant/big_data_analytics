@@ -274,12 +274,23 @@ services:
       _AIRFLOW_WWW_USER_CREATE: "true"
       _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
-      # Endpoints for the DAGs, read from the environment like in the Flink jobs.
+      # Task logs: uploaded to HDFS when a task finishes, read from there by the UI, and
+      # deleted locally, so the container keeps no logs (a running task's log is served
+      # from the local file). Only the path of remote_base_log_folder is used; the
+      # handler reaches HDFS through the webhdfs_default connection.
+      AIRFLOW__LOGGING__REMOTE_LOGGING: "true"
+      AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: hdfs://namenode:8020/airflow/logs
+      AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: webhdfs_default
+      AIRFLOW__LOGGING__DELETE_LOCAL_LOGS: "true"
+      # Airflow's default log path, except that the colons in the run ID (its timestamp)
+      # become dashes: HDFS does not allow ':' in path names.
+      AIRFLOW__LOGGING__LOG_FILENAME_TEMPLATE: 'dag_id={{ ti.dag_id }}/run_id={{ ti.run_id | replace(":", "-") }}/task_id={{ ti.task_id }}/{% if ti.map_index >= 0 %}map_index={{ ti.map_index }}/{% endif %}attempt={{ try_number|default(ti.try_number) }}.log'
+      # WebHDFS of the NameNode, for the task logs and for DAGs (WebHDFSHook).
+      AIRFLOW_CONN_WEBHDFS_DEFAULT: webhdfs://airflow@namenode:9870
+      # Kafka for the DAGs, read from the environment like in the Flink jobs.
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-      WEBHDFS_URL: http://namenode:9870
     volumes:
       - ./src/airflow/dags:/opt/airflow/dags:ro
-      - ${AIRFLOW_LOGS_DIR:-airflow-logs}:/opt/airflow/logs
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/v2/monitor/health >/dev/null && curl -sf http://localhost:8974/health >/dev/null"]
       interval: 15s
@@ -309,4 +320,3 @@ volumes:
   hdfs-datanode3:
   cassandra-data:
   airflow-postgres:
-  airflow-logs:

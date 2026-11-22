@@ -3,8 +3,9 @@
 apache-airflow-providers-fab
 # Driver for the metadata database.
 apache-airflow-providers-postgres
-# Clients for the DAGs: WebHDFS and Kafka.
+# WebHDFS client, used by the HDFS provider (task logs) and the DAGs.
 hdfs
+# Kafka client for the DAGs.
 confluent-kafka
 # Only so that `airflow dags ...` commands stop printing a notice about it.
 graphviz
