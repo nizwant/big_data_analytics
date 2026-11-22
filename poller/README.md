@@ -85,6 +85,8 @@ DATA_DIR/
 - `event` is the raw GitHub event; `packages` lists the CRAN packages in `event.repo.name`.
 - The format is defined only in `gh_poller/sink.py:make_record`.
 - Delivery is at least once: deduplicate on `event.id`.
+- `src/pyflink/github_events_ingest.py` (Flink) deduplicates the events and writes them, validated and with a schema,
+  to `github_repo_updates_clean` (Avro, `schemas/github_repo_updates_clean.avsc`) and to HDFS.
 - `event.created_at` is GitHub's own time of the event (use it as event time); `fetched_at` is when the poller
   received it.
 - `PublicEvent.created_at` is the repository's creation date; leave it out of delay measurements.

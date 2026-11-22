@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 DC=(docker compose "$@")
 KAFKA_BIN=/opt/kafka/bin
 BOOTSTRAP=kafka:19092
-GROUPS_TO_SHOW=(flink-cran-logs-ingest flink-cran-package-downloads)
+GROUPS_TO_SHOW=(flink-cran-logs-ingest flink-cran-package-downloads flink-github-events-ingest)
 
 section() { printf '\n=== %s ===\n' "$1"; }
 kafka() { "${DC[@]}" exec -T kafka "$KAFKA_BIN/$1" --bootstrap-server "$BOOTSTRAP" "${@:2}" 2>/dev/null; }

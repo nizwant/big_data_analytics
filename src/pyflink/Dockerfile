@@ -29,6 +29,6 @@ COPY --from=hadoop /opt/hadoop/share/hadoop/mapreduce /opt/hadoop/share/hadoop/m
 RUN find /opt/hadoop -name 'slf4j-reload4j*' -o -name 'reload4j*' | xargs rm -f
 ENV HADOOP_CLASSPATH=/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/hdfs/lib/*:/opt/hadoop/share/hadoop/mapreduce/*
 
-COPY cran_logs_ingest.py cran_package_downloads.py /opt/jobs/
+COPY cran_logs_ingest.py cran_package_downloads.py github_events_ingest.py /opt/jobs/
 
 USER flink

@@ -19,7 +19,8 @@ x-flink: &flink
       jobmanager.rpc.address: jobmanager
       jobmanager.memory.process.size: 1024m
       taskmanager.memory.process.size: 3072m
-      taskmanager.numberOfTaskSlots: 6
+      # The two CRAN jobs take 3 slots each, the GitHub job 1.
+      taskmanager.numberOfTaskSlots: 7
       parallelism.default: 3
       state.checkpoints.dir: hdfs://namenode:8020/flink/checkpoints
       # Client-side HDFS setting; keep in sync with dfs.replication in x-hadoop-config.
@@ -181,6 +182,23 @@ services:
   flink-cran-package-downloads-job:
     <<: *flink
     command: ["flink", "run", "-m", "jobmanager:8081", "-py", "/opt/jobs/cran_package_downloads.py"]
+    volumes:
+      - ./schemas:/opt/schemas:ro
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+
+  # Starts with the poller (--profile github).
+  flink-github-events-job:
+    <<: *flink
+    profiles: [github]
+    command: ["flink", "run", "-m", "jobmanager:8081", "-p", "1", "-py", "/opt/jobs/github_events_ingest.py"]
     volumes:
       - ./schemas:/opt/schemas:ro
     depends_on:

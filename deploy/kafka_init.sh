@@ -6,7 +6,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-TOPICS=(cran_mirror_logs cran_mirror_logs_clean cran_mirror_package_downloads github_repo_updates github_repo_list)
+TOPICS=(cran_mirror_logs cran_mirror_logs_clean cran_mirror_package_downloads github_repo_updates github_repo_updates_clean github_repo_list)
 PARTITIONS=3
 KAFKA_TOPICS=(docker compose "$@" exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092)
 
