@@ -176,6 +176,9 @@ services:
         condition: service_healthy
       taskmanager:
         condition: service_started
+      # The jobs write Parquet to HDFS, which needs a live DataNode.
+      datanode1:
+        condition: service_healthy
       kafka:
         condition: service_healthy
       schema-registry:
@@ -192,6 +195,9 @@ services:
         condition: service_healthy
       taskmanager:
         condition: service_started
+      # The jobs write Parquet to HDFS, which needs a live DataNode.
+      datanode1:
+        condition: service_healthy
       kafka:
         condition: service_healthy
       schema-registry:
@@ -247,6 +253,11 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:8080:8080"
     depends_on:
       airflow-postgres:
+        condition: service_healthy
+      # The DAGs talk to HDFS (WebHDFS) and Kafka.
+      namenode:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres/airflow
