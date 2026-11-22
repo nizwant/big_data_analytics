@@ -2,7 +2,7 @@ name: bigdata
 
 x-hadoop-config: &hadoop-config
   CORE-SITE.XML_fs.defaultFS: hdfs://namenode:8020
-  HDFS-SITE.XML_dfs.replication: 2
+  HDFS-SITE.XML_dfs.replication: ${HDFS_REPLICATION:-1}
   HDFS-SITE.XML_dfs.namenode.name.dir: file:///data/name
   HDFS-SITE.XML_dfs.datanode.data.dir: file:///data/datanode
   HDFS-SITE.XML_dfs.namenode.rpc-bind-host: 0.0.0.0
@@ -18,12 +18,12 @@ x-flink: &flink
     FLINK_PROPERTIES: |
       jobmanager.rpc.address: jobmanager
       jobmanager.memory.process.size: 1024m
-      taskmanager.memory.process.size: 3072m
+      taskmanager.memory.process.size: 2048m
       taskmanager.numberOfTaskSlots: 6
       parallelism.default: 3
       state.checkpoints.dir: hdfs://namenode:8020/flink/checkpoints
       # Client-side HDFS setting; keep in sync with dfs.replication in x-hadoop-config.
-      flink.hadoop.dfs.replication: 2
+      flink.hadoop.dfs.replication: ${HDFS_REPLICATION:-1}
 
 services:
   kafka:
@@ -41,6 +41,7 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -127,12 +128,15 @@ services:
 
   datanode2:
     <<: *datanode
+    # Only with the ha profile (stage/prod); dev runs a single DataNode, replication 1.
+    profiles: [ha]
     hostname: datanode2
     volumes:
       - ${HDFS_DATANODE2_DIR:-hdfs-datanode2}:/data
 
   datanode3:
     <<: *datanode
+    profiles: [ha]
     hostname: datanode3
     volumes:
       - ${HDFS_DATANODE3_DIR:-hdfs-datanode3}:/data
@@ -200,7 +204,7 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:9042:9042"
     environment:
       CASSANDRA_CLUSTER_NAME: big-data-analytics
-      MAX_HEAP_SIZE: ${CASSANDRA_MAX_HEAP:-1G}
+      MAX_HEAP_SIZE: ${CASSANDRA_MAX_HEAP:-512M}
       HEAP_NEWSIZE: 200M
     volumes:
       - ${CASSANDRA_DATA_DIR:-cassandra-data}:/var/lib/cassandra
