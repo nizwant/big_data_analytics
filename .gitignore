@@ -152,6 +152,8 @@ activemq-data/
 # Environments
 .env
 .envrc
+# Secrets of stage/prod (passwords, keys), passed as a second --env-file.
+deploy/*.secrets.env
 .venv
 env/
 venv/

@@ -60,3 +60,18 @@ section "Flink: jobs"
 "${DC[@]}" exec -T jobmanager curl -s http://localhost:8081/jobs/overview 2>/dev/null \
   | python3 -c 'import sys, json; [print(j["state"], j["name"][:70]) for j in json.load(sys.stdin)["jobs"]]' \
   2>/dev/null || echo "(jobmanager not reachable)"
+
+section "Airflow: components"
+"${DC[@]}" exec -T airflow curl -s http://localhost:8080/api/v2/monitor/health 2>/dev/null \
+  | python3 -c '
+import sys, json
+for name, info in json.load(sys.stdin).items():
+    beat = info.get("latest_scheduler_heartbeat") or info.get("latest_triggerer_heartbeat") \
+        or info.get("latest_dag_processor_heartbeat") or ""
+    print(name, info.get("status"), beat)
+' 2>/dev/null || echo "(airflow api-server not reachable)"
+
+section "Airflow: DAGs and import errors"
+"${DC[@]}" exec -T airflow airflow dags list --columns dag_id,is_paused 2>/dev/null \
+  || echo "(airflow not reachable)"
+"${DC[@]}" exec -T airflow airflow dags list-import-errors 2>/dev/null

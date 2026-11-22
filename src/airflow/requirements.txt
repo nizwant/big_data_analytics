@@ -1,0 +1,10 @@
+# Versions are pinned by the Airflow constraints file (see Dockerfile).
+# Login with users and roles (the slim image has no auth provider).
+apache-airflow-providers-fab
+# Driver for the metadata database.
+apache-airflow-providers-postgres
+# Clients for the DAGs: WebHDFS and Kafka.
+hdfs
+confluent-kafka
+# Only so that `airflow dags ...` commands stop printing a notice about it.
+graphviz
