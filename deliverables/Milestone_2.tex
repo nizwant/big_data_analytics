@@ -460,7 +460,7 @@ GitHub Events &
   interval doubling below 1\,000 remaining requests; pause on 403/429 until reset; retries 2/4/8\,s on 5xx. \\
 crantogit &
   HTTP download of \texttt{crantogit.csv}, watch-list build (\texttt{python -m gh\_\allowbreak{}poller.watchlist}) &
-  Account types (organisation/user) are cached so an interrupted build resumes. Runs daily (Airflow DAG \planned). \\
+  The file belongs to r-universe-org/cran-to-git and changes about once a day. Account types (organisation/user) are cached so an interrupted build resumes. Today the build is run by hand; a daily Airflow DAG will run it \planned. The rows go to Kafka (\texttt{github\_\allowbreak{}repo\_\allowbreak{}list}, copied to HDFS by Flink); the poller will read them from there \planned (now it reloads \texttt{watchlist.csv}). \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -513,8 +513,9 @@ are logged and dropped.
 % =====================================================================
 
 The system follows the \textbf{Lambda architecture} (decision unchanged from PM1). A single raw log in Kafka is the source
-for two paths: the \emph{speed layer} (Flink $\to$ Cassandra \texttt{rt\_\allowbreak{}*}) and the \emph{batch layer} (HDFS $\to$ Spark $\to$ Cassandra \texttt{batch\_\allowbreak{}*}).
-The serving layer (Streamlit) merges both views. Kappa-style reprocessing is not part of the design, so no replay demonstration is
+for two paths: the \emph{speed layer} (Flink) and the \emph{batch layer} (HDFS, Spark, MLflow). Both write to the \emph{serving layer}:
+Cassandra, with the \texttt{rt\_\allowbreak{}*} tables (TTL) filled by Flink and the \texttt{batch\_\allowbreak{}*} tables filled by Spark, which Streamlit reads and merges.
+Models trained in the batch layer and registered in MLflow are loaded by Flink, which uses them to enrich the stream. Kappa-style reprocessing is not part of the design, so no replay demonstration is
 required; however, since raw topics are retained and raw files are stored immutably in HDFS, the batch layer can always be recomputed from scratch.
 
 \begin{figure}[H]
@@ -532,62 +533,65 @@ required; however, since raw topics are retained and raw files are stored immuta
   layer/.style={font=\bfseries\scriptsize,anchor=north west}]
   % ---- translucent layer regions
   \begin{scope}[on background layer]
-    \fill[blue!60!cyan,opacity=0.14,rounded corners=6pt] (0.0,-4.9) rectangle (7.1,-9.5);
-    \draw[blue!60!black,opacity=0.5,rounded corners=6pt,thick] (0.0,-4.9) rectangle (7.1,-9.5);
+    \fill[blue!60!cyan,opacity=0.14,rounded corners=6pt] (0.0,-4.9) rectangle (7.1,-7.8);
+    \draw[blue!60!black,opacity=0.5,rounded corners=6pt,thick] (0.0,-4.9) rectangle (7.1,-7.8);
     \fill[orange,opacity=0.14,rounded corners=6pt] (7.9,-4.9) rectangle (16.0,-9.5);
     \draw[orange!70!black,opacity=0.5,rounded corners=6pt,thick] (7.9,-4.9) rectangle (16.0,-9.5);
-    \fill[gray,opacity=0.12,rounded corners=6pt] (3.6,-10.0) rectangle (12.4,-12.0);
-    \draw[gray,opacity=0.6,rounded corners=6pt,thick] (3.6,-10.0) rectangle (12.4,-12.0);
+    \fill[gray,opacity=0.12,rounded corners=6pt] (0.0,-10.0) rectangle (16.0,-12.2);
+    \draw[gray,opacity=0.6,rounded corners=6pt,thick] (0.0,-10.0) rectangle (16.0,-12.2);
   \end{scope}
   \node[layer,text=blue!50!black] at (0.2,-5.0) {SPEED LAYER};
   \node[layer,text=orange!60!black] at (8.1,-5.0) {BATCH LAYER};
-  \node[layer,text=black!60] at (3.8,-10.1) {SERVING LAYER};
+  \node[layer,text=black!60] at (0.2,-10.1) {SERVING LAYER};
   \node[font=\bfseries\small] at (8,1.3) {Lambda architecture (speed layer + batch layer + serving layer)};
   % ---- sources and ingestion
   \node[src] (logs) at (3,0) {CRAN mirror logs\\(cran.mi2.ai access log)};
   \node[src] (gh)   at (8,0) {GitHub Events API\\(watch-list + global)};
-  \node[src] (ctg)  at (14,0) {crantogit.csv\\(daily)};
+  \node[src,plan] (ctg)  at (14,0) {r-universe-org/\\cran-to-git (crantogit.csv)};
   \node[shared,plan] (prod) at (3,-2) {Filebeat on mirror (WIP)\\log generator in dev};
   \node[shared] (poll) at (8,-2) {GitHub poller\\(Python, ETag, tiers)};
-  \node[batch,plan] (af) at (14,-2) {Airflow\\daily DAGs (WIP)};
-  \node[shared,minimum width=10.2cm] (kafka) at (8,-4) {Kafka (KRaft) + Schema Registry (Avro)\\raw topics, \texttt{*\_clean} topics, \texttt{cran\_mirror\_package\_downloads}};
+  \node[batch,plan] (af) at (14,-2) {Airflow\\daily crantogit DAG (WIP)};
+  \node[shared,minimum width=10.2cm] (kafka) at (8,-4) {Kafka (KRaft) + Schema Registry (Avro)\\raw topics, \texttt{*\_clean} topics, \texttt{cran\_mirror\_package\_downloads}, \texttt{github\_repo\_list}};
   % ---- speed layer
-  \node[stream,minimum width=5.8cm,minimum height=1.3cm] (flink) at (3.5,-6.5) {Flink (PyFlink)\\parse, validate, deduplicate, extract downloads\\\textit{+ windows, joins, model inference (WIP)}};
-  \node[stream,plan] (rt) at (3.5,-8.6) {Cassandra \texttt{rt\_*} (WIP)\\TTL 48\,h};
+  \node[stream,minimum width=5.8cm,minimum height=1.3cm] (flink) at (3.5,-6.5) {Flink (PyFlink)\\parse, validate, deduplicate, extract downloads\\\textit{+ windows, joins, model enrichment (WIP)}};
   % ---- batch layer
   \node[batch] (hdfs) at (10,-6.5) {HDFS (Parquet)\\raw / clean / bad};
   \node[batch,plan] (spark) at (14,-6.5) {PySpark batch (WIP)\\features, training};
-  \node[batch,plan] (bt) at (14,-8.6) {Cassandra \texttt{batch\_*} (WIP)};
   \node[batch,plan] (mlf) at (10,-8.6) {MLflow (WIP)\\training, model registry};
-  % ---- serving
-  \node[shared,plan] (st) at (8,-11.0) {Streamlit dashboard (WIP)};
+  % ---- serving layer
+  \node[stream,plan] (rt) at (3.5,-11.2) {Cassandra \texttt{rt\_*} (WIP)\\TTL 48\,h};
+  \node[shared,plan] (st) at (8.5,-11.2) {Streamlit dashboard (WIP)};
+  \node[batch,plan] (bt) at (14,-11.2) {Cassandra \texttt{batch\_*} (WIP)};
   % ---- flows
   \draw[flow] (logs) -- (prod);
   \draw[flow] (gh) -- (poll);
-  \draw[flow] (ctg) -- (af);
+  \draw[pflow] (ctg) -- (af);
+  \node[font=\tiny,text=black!60,anchor=west,align=left] at (14.1,-1.0) {fetched daily\\(planned)};
   \draw[flow] (prod) -- (3,-3.5);
-  \draw[flow] (poll) -- (8,-3.5);
-  \draw[pflow] (af) -- (poll);
+  \draw[flow] (8.6,-2.5) -- (8.6,-3.5);
+  \draw[pflow] (7.4,-3.5) -- (7.4,-2.5);
+  \draw[pflow] (12.7,-2.5) -- (12.7,-3.5);
+  \node[font=\tiny,text=black!60,anchor=east] at (12.6,-3.0) {\texttt{github\_repo\_list}};
   \draw[flow] (3.5,-4.5) -- (3.5,-5.85);
   \draw[flow] (flink.east) -- (hdfs.west);
-  \draw[pflow] (flink) -- (rt);
   \draw[pflow] (hdfs) -- (spark);
   \draw[pflow] (af) -- (spark.north);
   \draw[pflow] (spark) -- (mlf);
-  \draw[pflow] (spark) -- (bt);
   \draw[pflow] (mlf.west) -- (6.0,-8.6) -- (6.0,-7.15);
-  \node[font=\tiny,align=center,text=black!70] at (6.55,-7.95) {models for\\inference};
-  \draw[pflow] (rt.south) |- (st.west);
-  \draw[pflow] (bt.south) |- (st.east);
+  \node[font=\tiny,align=center,text=black!70] at (6.55,-8.25) {models for\\inference};
+  \draw[pflow] (flink.south) -- (rt.north);
+  \draw[pflow] (spark.south) -- (bt.north);
+  \draw[pflow] (rt) -- (st);
+  \draw[pflow] (bt) -- (st);
   % ---- legend
-  \node[stream,minimum width=0.6cm,minimum height=0.35cm] at (1,-13.0) {};
-  \node[anchor=west,font=\scriptsize] at (1.4,-13.0) {stream path};
-  \node[batch,minimum width=0.6cm,minimum height=0.35cm] at (4.6,-13.0) {};
-  \node[anchor=west,font=\scriptsize] at (5.0,-13.0) {batch path};
-  \node[shared,minimum width=0.6cm,minimum height=0.35cm] at (8.2,-13.0) {};
-  \node[anchor=west,font=\scriptsize] at (8.6,-13.0) {shared};
-  \node[box,dashed,minimum width=0.6cm,minimum height=0.35cm] at (11.2,-13.0) {};
-  \node[anchor=west,font=\scriptsize] at (11.6,-13.0) {work in progress (WIP)};
+  \node[stream,minimum width=0.6cm,minimum height=0.35cm] at (1,-13.1) {};
+  \node[anchor=west,font=\scriptsize] at (1.4,-13.1) {stream path};
+  \node[batch,minimum width=0.6cm,minimum height=0.35cm] at (4.6,-13.1) {};
+  \node[anchor=west,font=\scriptsize] at (5.0,-13.1) {batch path};
+  \node[shared,minimum width=0.6cm,minimum height=0.35cm] at (8.2,-13.1) {};
+  \node[anchor=west,font=\scriptsize] at (8.6,-13.1) {shared};
+  \node[box,dashed,minimum width=0.6cm,minimum height=0.35cm] at (11.2,-13.1) {};
+  \node[anchor=west,font=\scriptsize] at (11.6,-13.1) {work in progress (WIP)};
 \end{tikzpicture}}
 \caption{Solution architecture -- \textbf{Lambda architecture} (speed layer in blue, batch layer in orange,
 serving layer in grey, shared components in white; dashed = work in progress).}
@@ -599,10 +603,11 @@ serving layer in grey, shared components in white; dashed = work in progress).}
 \begin{enumerate}
   \item \textbf{CRAN logs:} mirror access log $\to$ Filebeat (generator in dev) $\to$ \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}logs} $\to$ Flink ingest $\to$ \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}clean} + HDFS
         (raw, clean, bad) $\to$ Flink download extraction $\to$ \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}package\_\allowbreak{}downloads} + HDFS.
-  \item \textbf{GitHub:} crantogit $\to$ watch-list $\to$ poller $\to$ \texttt{github\_\allowbreak{}repo\_\allowbreak{}updates} (+ \texttt{github\_\allowbreak{}repo\_\allowbreak{}list}) $\to$
+  \item \textbf{GitHub:} r-universe-org/cran-to-git $\to$ daily Airflow DAG \planned\ $\to$ watch-list rows in \texttt{github\_\allowbreak{}repo\_\allowbreak{}list} (Kafka; Flink also copies them to HDFS)
+        $\to$ GitHub poller (reads the watch-list from Kafka \planned; today the build writes \texttt{watchlist.csv}, which the poller reloads) $\to$ \texttt{github\_\allowbreak{}repo\_\allowbreak{}updates} $\to$
         Flink ingest $\to$ \texttt{github\_\allowbreak{}repo\_\allowbreak{}updates\_\allowbreak{}clean} + HDFS.
-  \item \textbf{Speed path} \planned: clean topics $\to$ Flink windows and joins, and inference with models taken from MLflow, $\to$ Cassandra \texttt{rt\_\allowbreak{}*} $\to$ Streamlit.
-  \item \textbf{Batch path} \planned: HDFS Parquet $\to$ PySpark (scheduled by Airflow) $\to$ features and forecasts $\to$ MLflow and Cassandra \texttt{batch\_\allowbreak{}*} $\to$ Streamlit.
+  \item \textbf{Speed path} \planned: clean topics $\to$ Flink windows and joins, with enrichment by models loaded from MLflow, $\to$ Cassandra \texttt{rt\_\allowbreak{}*} (serving layer) $\to$ Streamlit.
+  \item \textbf{Batch path} \planned: HDFS Parquet $\to$ PySpark (scheduled by Airflow) $\to$ features, training and forecasts; models registered in MLflow; aggregates and forecasts $\to$ Cassandra \texttt{batch\_\allowbreak{}*} (serving layer) $\to$ Streamlit.
 \end{enumerate}
 
 \subsection{Technologies and tools}
@@ -620,8 +625,8 @@ Messaging & Kafka 4.3.2 (KRaft), Schema Registry 8.4.1 & \done & Buffering, repl
 Stream processing & Flink 1.20.3 (PyFlink, Table API/SQL) & \partialimpl & Validation, deduplication, extraction; later windows/joins \\
 Batch storage & HDFS 3.4.2, Parquet & \done & Immutable raw and clean history \\
 Batch processing & Spark (PySpark) & \planned & Aggregates, features, training \\
-Orchestration & Airflow 3.4.0 (Postgres metadata DB) & \partialimpl & Scheduling of batch jobs and watch-list refresh \\
-Serving storage & Cassandra 5.0.9 & \partialimpl & \texttt{rt\_\allowbreak{}*} (TTL) and \texttt{batch\_\allowbreak{}*} tables \\
+Orchestration & Airflow 3.4.0 (Postgres metadata DB) & \partialimpl & Scheduling of batch jobs and of the daily crantogit watch-list refresh \\
+Serving layer storage & Cassandra 5.0.9 & \partialimpl & \texttt{rt\_\allowbreak{}*} (TTL, from Flink) and \texttt{batch\_\allowbreak{}*} (from Spark) tables \\
 ML & MLflow & \planned & Experiment tracking and model registry \\
 Visualisation & Streamlit & \planned & Dashboard \\
 Deployment & Docker Compose (dev / stage / prod env files), stage and prod VMs on the mirror's network & \done & Reproducible environments, init scripts \\
@@ -843,7 +848,7 @@ via crantogit, maintains rolling aggregations, serves reconciled views).
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/fig_business_process.png}
+\includegraphics[width=\textwidth]{figures/fig_business_process.jpg}
 \caption{Business process swimlane diagram (from Milestone 1).}
 \end{figure}
 

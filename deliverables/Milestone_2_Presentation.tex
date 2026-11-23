@@ -152,36 +152,47 @@
     pflow/.style={-{Latex[length=2mm]},thick,gray!70!black,dashed},
     lab/.style={font=\bfseries\scriptsize,anchor=north west}]
     \begin{scope}[on background layer]
-      \fill[blue!60!cyan,opacity=0.13,rounded corners=6pt] (7.55,1.05) rectangle (13.85,-1.55);
-      \draw[streamc,opacity=0.5,rounded corners=6pt,thick] (7.55,1.05) rectangle (13.85,-1.55);
+      \fill[blue!60!cyan,opacity=0.13,rounded corners=6pt] (7.55,1.05) rectangle (10.75,-1.55);
+      \draw[streamc,opacity=0.5,rounded corners=6pt,thick] (7.55,1.05) rectangle (10.75,-1.55);
       \fill[orange,opacity=0.13,rounded corners=6pt] (7.55,-1.85) rectangle (13.85,-5.15);
       \draw[batchc,opacity=0.5,rounded corners=6pt,thick] (7.55,-1.85) rectangle (13.85,-5.15);
+      \fill[gray,opacity=0.13,rounded corners=6pt] (14.15,1.05) rectangle (16.85,-5.15);
+      \draw[gray,opacity=0.6,rounded corners=6pt,thick] (14.15,1.05) rectangle (16.85,-5.15);
     \end{scope}
     \node[lab,text=streamc] at (7.7,1.0) {SPEED LAYER};
     \node[lab,text=batchc] at (7.7,-1.9) {BATCH LAYER};
+    \node[lab,text=greyc] at (14.3,1.0) {SERVING LAYER};
     \node[src] (logs) at (0,0.0) {CRAN mirror\\access log};
     \node[src] (gh) at (0,-1.7) {GitHub\\Events API};
-    \node[src] (ctg) at (0,-4.0) {crantogit.csv\\(daily)};
+    \node[src,plan] (ctg) at (0,-4.0) {r-universe-org/\\cran-to-git};
+    \node[font=\scriptsize\itshape,text=greyc,align=center] at (0,-4.85) {fetched daily (planned)};
     \node[shared,plan] (fb) at (3.0,0.0) {Filebeat\\(log generator now)};
     \node[shared] (poll) at (3.0,-1.7) {GitHub poller\\ETag, tiers};
-    \node[batch,plan] (af) at (3.0,-4.0) {Airflow\\daily DAGs};
+    \node[batch,plan] (af) at (3.0,-4.0) {Airflow\\daily crantogit DAG};
     \node[shared,minimum height=2.7cm] (kafka) at (5.9,-0.85) {Kafka\\+ Schema\\Registry\\(Avro)};
-    \node[stream,minimum height=1.2cm] (flink) at (9.0,-0.2) {Flink\\validate, dedup,\\extract};
-    \node[stream,plan] (rt) at (12.2,-0.2) {Cassandra\\rt\_* (TTL)};
+    \node[stream,minimum height=1.2cm] (flink) at (9.0,-0.2) {Flink\\validate, dedup,\\extract, enrich};
     \node[batch] (hdfs) at (9.0,-3.0) {HDFS\\Parquet};
-    \node[batch,plan] (spark) at (12.2,-3.0) {PySpark\\+ MLflow};
-    \node[batch,plan] (bt) at (12.2,-4.55) {Cassandra\\batch\_*};
-    \node[shared,plan,minimum height=2.4cm,minimum width=1.9cm] (st) at (15.4,-2.3) {Streamlit\\dashboard};
-    \draw[flow] (logs) -- (fb); \draw[flow] (gh) -- (poll); \draw[flow] (ctg) -- (af);
-    \draw[flow] (fb) -- (kafka.west |- fb); \draw[flow] (poll) -- (kafka.west |- poll);
-    \draw[pflow] (af) -- (poll);
+    \node[batch,plan] (spark) at (9.0,-4.55) {PySpark\\batch jobs};
+    \node[batch,plan] (mlf) at (12.2,-3.0) {MLflow\\trained models};
+    \node[stream,plan] (rt) at (15.5,0.1) {Cassandra\\rt\_* (TTL)};
+    \node[shared,plan,minimum height=1.3cm] (st) at (15.5,-2.3) {Streamlit\\dashboard};
+    \node[batch,plan] (bt) at (15.5,-4.55) {Cassandra\\batch\_*};
+    \draw[flow] (logs) -- (fb); \draw[flow] (gh) -- (poll); \draw[pflow] (ctg) -- (af);
+    \draw[flow] (fb) -- (kafka.west |- fb);
+    \draw[flow] ([yshift=0.28cm]poll.east) -- ([yshift=0.28cm]poll.east -| kafka.west);
+    \draw[pflow] ([yshift=-0.28cm]poll.east -| kafka.west) -- ([yshift=-0.28cm]poll.east);
+    \draw[pflow] (af.east) -| (kafka.south);
+    \node[font=\tiny,text=greyc,anchor=east] at (5.8,-3.35) {github\_repo\_list};
     \draw[flow] (kafka.east |- flink) -- (flink);
     \draw[flow] (flink.south) -- (hdfs.north);
-    \draw[pflow] (flink) -- (rt);
+    \draw[pflow] (flink.east |- rt.west) -- (rt.west);
     \draw[pflow] (hdfs) -- (spark);
-    \draw[pflow] (spark) -- (bt);
-    \draw[pflow] (rt.east) -| (st.north);
-    \draw[pflow] (bt.east) -| (st.south);
+    \draw[pflow] (spark) -- (mlf);
+    \draw[pflow] (spark.east) -- (bt.west);
+    \draw[pflow] (mlf.north) |- ([yshift=-0.3cm]flink.east);
+    \node[font=\scriptsize\itshape,text=streamc,anchor=west,align=left] at (12.3,-1.15) {model inference\\enriches the stream};
+    \draw[pflow] (rt) -- (st);
+    \draw[pflow] (bt) -- (st);
   \end{tikzpicture}}
 
   \vspace{1ex}
