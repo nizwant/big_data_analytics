@@ -1,0 +1,9 @@
+.env
+.venv/
+data/
+notes/
+tests/
+**/__pycache__/
+*.sqlite3*
+watchlist.csv
+account_types.csv

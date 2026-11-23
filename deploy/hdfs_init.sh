@@ -10,9 +10,11 @@ DIRS=(
   /data/raw/cran_mirror_logs
   /data/raw/cran_mirror_logs_bad
   /data/raw/github_repo_updates
+  /data/raw/github_repo_updates_bad
   /data/raw/github_repo_list
   /data/clean/cran_mirror_logs
   /data/clean/cran_mirror_package_downloads
+  /data/clean/github_repo_updates
   /airflow/logs
 )
 

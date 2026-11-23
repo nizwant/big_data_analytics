@@ -1,0 +1,92 @@
+{
+  "type": "record",
+  "name": "GithubRepoUpdateClean",
+  "namespace": "github.events",
+  "doc": "One validated GitHub event in the topic github_repo_updates_clean (key repo_name) and in /data/clean/github_repo_updates. Produced by src/pyflink/github_events_ingest.py from github_repo_updates.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "GitHub event id; repeats within DEDUP_TTL_H (48 h) are dropped."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "GitHub event type, for example PushEvent, ReleaseEvent, CreateEvent."
+    },
+    {
+      "name": "event_ts",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "GitHub's own time of the event (event.created_at, UTC). For PublicEvent it is the repository's creation date."
+    },
+    {
+      "name": "fetched_ts",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "When the poller received the event (fetched_at, UTC)."
+    },
+    {
+      "name": "track",
+      "type": "string",
+      "doc": "global (the public feed /events) or watchlist (a timeline from the watch-list)."
+    },
+    {
+      "name": "endpoint",
+      "type": "string",
+      "doc": "The GitHub timeline the event was read from, for example /orgs/tidyverse/events."
+    },
+    {
+      "name": "repo_id",
+      "type": "long",
+      "doc": "GitHub repository id (event.repo.id)."
+    },
+    {
+      "name": "repo_name",
+      "type": "string",
+      "doc": "owner/repo (event.repo.name)."
+    },
+    {
+      "name": "actor_id",
+      "type": "long",
+      "doc": "GitHub user id of the actor (event.actor.id)."
+    },
+    {
+      "name": "actor_login",
+      "type": "string",
+      "doc": "Login of the actor (event.actor.login)."
+    },
+    {
+      "name": "org_login",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Organisation that owns the repository (event.org.login); null when there is none."
+    },
+    {
+      "name": "packages",
+      "type": {"type": "array", "items": ["null", "string"]},
+      "doc": "CRAN packages in repo_name according to the watch-list; empty if none."
+    },
+    {
+      "name": "ref",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "payload.ref (CreateEvent, DeleteEvent, PushEvent)."
+    },
+    {
+      "name": "ref_type",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "payload.ref_type: repository, branch or tag (CreateEvent, DeleteEvent)."
+    },
+    {
+      "name": "release_tag",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "payload.release.tag_name (ReleaseEvent)."
+    },
+    {
+      "name": "payload_json",
+      "type": "string",
+      "doc": "event.payload as JSON text; its fields depend on event_type."
+    }
+  ]
+}
