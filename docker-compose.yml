@@ -2,7 +2,7 @@ name: bigdata
 
 x-hadoop-config: &hadoop-config
   CORE-SITE.XML_fs.defaultFS: hdfs://namenode:8020
-  HDFS-SITE.XML_dfs.replication: 2
+  HDFS-SITE.XML_dfs.replication: ${HDFS_REPLICATION:-1}
   HDFS-SITE.XML_dfs.namenode.name.dir: file:///data/name
   HDFS-SITE.XML_dfs.datanode.data.dir: file:///data/datanode
   HDFS-SITE.XML_dfs.namenode.rpc-bind-host: 0.0.0.0
@@ -18,12 +18,12 @@ x-flink: &flink
     FLINK_PROPERTIES: |
       jobmanager.rpc.address: jobmanager
       jobmanager.memory.process.size: 1024m
-      taskmanager.memory.process.size: 3072m
+      taskmanager.memory.process.size: 2048m
       taskmanager.numberOfTaskSlots: 6
       parallelism.default: 3
       state.checkpoints.dir: hdfs://namenode:8020/flink/checkpoints
       # Client-side HDFS setting; keep in sync with dfs.replication in x-hadoop-config.
-      flink.hadoop.dfs.replication: 2
+      flink.hadoop.dfs.replication: ${HDFS_REPLICATION:-1}
 
 services:
   kafka:
@@ -41,6 +41,7 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -127,12 +128,15 @@ services:
 
   datanode2:
     <<: *datanode
+    # Only with the ha profile (stage/prod); dev runs a single DataNode, replication 1.
+    profiles: [ha]
     hostname: datanode2
     volumes:
       - ${HDFS_DATANODE2_DIR:-hdfs-datanode2}:/data
 
   datanode3:
     <<: *datanode
+    profiles: [ha]
     hostname: datanode3
     volumes:
       - ${HDFS_DATANODE3_DIR:-hdfs-datanode3}:/data
@@ -172,6 +176,9 @@ services:
         condition: service_healthy
       taskmanager:
         condition: service_started
+      # The jobs write Parquet to HDFS, which needs a live DataNode.
+      datanode1:
+        condition: service_healthy
       kafka:
         condition: service_healthy
       schema-registry:
@@ -188,6 +195,9 @@ services:
         condition: service_healthy
       taskmanager:
         condition: service_started
+      # The jobs write Parquet to HDFS, which needs a live DataNode.
+      datanode1:
+        condition: service_healthy
       kafka:
         condition: service_healthy
       schema-registry:
@@ -200,7 +210,7 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:9042:9042"
     environment:
       CASSANDRA_CLUSTER_NAME: big-data-analytics
-      MAX_HEAP_SIZE: ${CASSANDRA_MAX_HEAP:-1G}
+      MAX_HEAP_SIZE: ${CASSANDRA_MAX_HEAP:-512M}
       HEAP_NEWSIZE: 200M
     volumes:
       - ${CASSANDRA_DATA_DIR:-cassandra-data}:/var/lib/cassandra
@@ -209,6 +219,83 @@ services:
       interval: 15s
       timeout: 10s
       retries: 20
+      start_period: 60s
+
+  # Metadata database of Airflow (DAG runs, task states, users). Not published.
+  airflow-postgres:
+    image: postgres:16.16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      # Only applied when the data directory is first initialized.
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+      POSTGRES_DB: airflow
+    volumes:
+      - ${AIRFLOW_POSTGRES_DIR:-airflow-postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Airflow 3 in one container: the api-server (UI and REST API), the scheduler (which
+  # also runs the tasks, as the LocalExecutor is the default), the DAG processor (parses
+  # src/airflow/dags) and the triggerer (runs deferrable sensors). If any of them exits,
+  # the container exits and Docker restarts it. Before starting them, the image's
+  # entrypoint migrates the database and creates the admin user (both idempotent).
+  airflow:
+    build: ./src/airflow
+    image: bigdata/airflow:3.4.0
+    restart: unless-stopped
+    command: ["bash", "-c", "airflow api-server & airflow scheduler & airflow dag-processor & airflow triggerer & wait -n"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      # The DAGs talk to HDFS (WebHDFS) and Kafka.
+      namenode:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres/airflow
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Scan the dags folder for new files every 60 s (default 300 s).
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "60"
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+      # Other keys are generated when the container is created, but this one encrypts
+      # connection passwords saved in the database, so it must survive a recreation.
+      # Empty (the dev default) stores them unencrypted.
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+      # Task logs: uploaded to HDFS when a task finishes, read from there by the UI, and
+      # deleted locally, so the container keeps no logs (a running task's log is served
+      # from the local file). Only the path of remote_base_log_folder is used; the
+      # handler reaches HDFS through the webhdfs_default connection.
+      AIRFLOW__LOGGING__REMOTE_LOGGING: "true"
+      AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: hdfs://namenode:8020/airflow/logs
+      AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: webhdfs_default
+      AIRFLOW__LOGGING__DELETE_LOCAL_LOGS: "true"
+      # Airflow's default log path, except that the colons in the run ID (its timestamp)
+      # become dashes: HDFS does not allow ':' in path names.
+      AIRFLOW__LOGGING__LOG_FILENAME_TEMPLATE: 'dag_id={{ ti.dag_id }}/run_id={{ ti.run_id | replace(":", "-") }}/task_id={{ ti.task_id }}/{% if ti.map_index >= 0 %}map_index={{ ti.map_index }}/{% endif %}attempt={{ try_number|default(ti.try_number) }}.log'
+      # WebHDFS of the NameNode, for the task logs and for DAGs (WebHDFSHook).
+      AIRFLOW_CONN_WEBHDFS_DEFAULT: webhdfs://airflow@namenode:9870
+      # Kafka for the DAGs, read from the environment like in the Flink jobs.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    volumes:
+      - ./src/airflow/dags:/opt/airflow/dags:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/v2/monitor/health >/dev/null && curl -sf http://localhost:8974/health >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
       start_period: 60s
 
   mirror-log-generator:
@@ -232,3 +319,4 @@ volumes:
   hdfs-datanode2:
   hdfs-datanode3:
   cassandra-data:
+  airflow-postgres:

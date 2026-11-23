@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Wipes the dev environment: stops and removes all containers and deletes all
-# data volumes (Kafka, HDFS, Cassandra), including stale volumes from services
+# data volumes (Kafka, HDFS, Cassandra, Airflow metadata and logs), including stale volumes from services
 # that no longer exist in docker-compose.yml. Dev only: it uses the default
 # named volumes and never touches the /srv/bigdata directories of stage/prod.
 # Afterwards, start fresh with:
@@ -8,7 +8,7 @@
 #
 # Usage: deploy/dev_clean.sh [-y] [--images]
 #   -y        skip the confirmation prompt
-#   --images  also remove the images built by compose (bigdata/pyflink, log generator)
+#   --images  also remove the images built by compose (bigdata/pyflink, bigdata/airflow, log generator)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -26,7 +26,7 @@ done
 PROJECT=$(docker compose config --format json | python3 -c 'import sys, json; print(json.load(sys.stdin)["name"])')
 
 if [ "$YES" -ne 1 ]; then
-  echo "This deletes ALL dev containers and data (Kafka, HDFS, Cassandra) of project '$PROJECT'."
+  echo "This deletes ALL dev containers and data (Kafka, HDFS, Cassandra, Airflow) of project '$PROJECT'."
   read -r -p "Continue? [y/N] " answer
   [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 fi

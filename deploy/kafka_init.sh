@@ -12,13 +12,7 @@ KAFKA_TOPICS=(docker compose "$@" exec -T kafka /opt/kafka/bin/kafka-topics.sh -
 
 echo "Waiting for Kafka..."
 for _ in $(seq 60); do
-  # Storage of the schema registry (see docker-compose.yml). The registry requires exactly
-# one partition and a compacted topic, so schemas are never expired.
-"${KAFKA_TOPICS[@]}" --create --if-not-exists \
-  --topic _schemas --partitions 1 --replication-factor 1 \
-  --config cleanup.policy=compact
-
-"${KAFKA_TOPICS[@]}" --list >/dev/null 2>&1 && break
+  "${KAFKA_TOPICS[@]}" --list >/dev/null 2>&1 && break
   sleep 5
 done
 
