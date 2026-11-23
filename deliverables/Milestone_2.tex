@@ -74,17 +74,14 @@ team allocation) is unchanged and kept in Section~\ref{sec:pm1}.
 
 \subsection{Business assumptions}
 
-\begin{itemize}
-  \item \textbf{No change} to purpose, target users, the three user-facing deliverables (real-time demand
-        dashboard, version adoption and lag analytics, mirror health view) or the two business cases
-        (load forecasting, bot detection).
-  \item \todo{Confirm with the team whether any business case or deliverable was dropped or re-scoped.}
-\end{itemize}
+\textbf{No change} to purpose, target users, the three user-facing deliverables (real-time demand
+dashboard, version adoption and lag analytics, mirror health view) or the two business cases
+(load forecasting, bot detection).
 
 \subsection{Technical assumptions}
 
 {\footnotesize
-\begin{longtable}{@{}L{2.0cm}L{2.7cm}L{4.7cm}L{5.0cm}@{}}
+\begin{longtable}{@{}L{1.8cm}L{2.3cm}L{4.3cm}L{6.3cm}@{}}
 \caption{Changes with respect to Milestone 1.}\\
 \toprule
 \textbf{Topic} & \textbf{PM1 assumption} & \textbf{Now} & \textbf{Justification} \\
@@ -98,63 +95,79 @@ team allocation) is unchanged and kept in Section~\ref{sec:pm1}.
 \endfoot
 Kafka topics &
   \texttt{cran.downloads}, \texttt{gh.events.raw} (JSON) &
-  \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}logs}, \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}clean}, \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}package\_\allowbreak{}downloads},
-  \texttt{github\_\allowbreak{}repo\_\allowbreak{}updates}, \texttt{github\_\allowbreak{}repo\_\allowbreak{}updates\_\allowbreak{}clean}, \texttt{github\_\allowbreak{}repo\_\allowbreak{}list} &
+  {\scriptsize\texttt{cran\_mirror\_logs}}\newline
+  {\scriptsize\texttt{cran\_mirror\_logs\_clean}}\newline
+  {\scriptsize\texttt{cran\_mirror\_package\_downloads}}\newline
+  {\scriptsize\texttt{github\_repo\_updates}}\newline
+  {\scriptsize\texttt{github\_repo\_updates\_clean}}\newline
+  {\scriptsize\texttt{github\_repo\_list}} &
   Raw, validated and derived data are separated into distinct topics (a raw topic is never overwritten),
-  which also makes reprocessing and quality checks possible. Dots in topic names were avoided
-  (Kafka warns about collisions between \texttt{.} and \texttt{\_\allowbreak{}}). Topics have 3 partitions and are keyed
+  which also makes reprocessing and quality checks possible. The topic names therefore changed: the two PM1 topics
+  were replaced by six, named after the source and the processing stage. Topics have 3 partitions and are keyed
   (\texttt{package\_\allowbreak{}name}, \texttt{repo\_\allowbreak{}name}), so all records of one package or repository stay
   ordered in one partition. \\
+\midrule[0.3pt]
 Message format &
   JSON &
   Raw: text (log line) / JSON (GitHub). Clean: \textbf{Avro} with Confluent Schema Registry &
   Avro gives enforced, versioned, backward-compatible schemas and compact messages. A job refuses to
   start if its columns drift from the \texttt{.avsc} file. \\
+\midrule[0.3pt]
 CRAN log source &
   Python daemon tailing the live log file, syslog &
   \textbf{Filebeat} installed on the original mirror tails the access log and produces each line to Kafka (work in progress). Until then a \textbf{log generator} simulates the stream in dev &
   Filebeat is a lightweight, proven shipper for file tailing with built-in Kafka output, offsets and retries, so no custom daemon has to be maintained on the mirror. \\
+\midrule[0.3pt]
 Log format &
   W3C/Nginx log with User-Agent; bot filtering by User-Agent &
   Apache \emph{common} log format (no referrer, no User-Agent) &
   The mirror's logs contain only IP, time, request, status and size. Bot and CI detection therefore
   cannot use the User-Agent and must rely on per-client behaviour (request rate, 404 ratio, path
   patterns); this is why the bot business case is modelled as sessions classification. \\
+\midrule[0.3pt]
 Late and invalid data &
   Event-time watermark with 30\,s allowed lateness &
   Ingest jobs reject records more than 5\,min in the future or more than 7 days in the past (relative to Kafka arrival time), with a
-  \texttt{reject\_\allowbreak{}reason}. The 30\,s watermark stays the plan for the windowed jobs (work in progress) &
-  A watermark only helps windowed aggregations, which are not built yet. The ingest rule protects the Parquet sink (one open writer per
+  \texttt{reject\_\allowbreak{}reason}. For the windowed jobs (work in progress) the watermark delay is raised to 1\,minute &
+  A watermark only helps windowed aggregations, which are not built yet. One minute of allowed lateness is enough because the analyses use minute-level or coarser aggregates, so finer precision is not needed. The ingest rule protects the Parquet sink (one open writer per
   event hour) from unbounded history, e.g.\ the 90 days returned on the first poll of a GitHub timeline. Rejected records are kept, not lost. \\
+\midrule[0.3pt]
 Non-download requests &
   Ingestion discards non-artifact GET requests &
   All parseable requests are kept in \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}clean}; only the downloads job keeps package files &
   Bot detection needs the full request history of a client (paths, 404 ratio, non-package requests), which a download-only stream would lose.
   Filtering is therefore done in a derived topic, not at ingestion. \\
+\midrule[0.3pt]
 Raw and clean storage &
   Kafka appended to HDFS as Parquet &
   Flink writes raw lines unchanged as text and validated records as Parquet (Snappy); files are finalised on checkpoint (60\,s) &
   Raw data is kept byte for byte, so it can be re-parsed if rules change. Only typed, validated data is Parquet. The same Flink job
   does both writes, so no separate consumer or connector has to be run, and readers never see half-written files. \\
+\midrule[0.3pt]
 GitHub acquisition &
   Poller with ETag, 5\,000 req/h limit &
   Two-tier watch-list poller (tier~1 every 120\,s, tier~2 within a 3\,500 req/h budget), org timelines
   instead of per-repo polling, SQLite state, optional global feed &
   Staying inside the quota for $\sim$18\,000 packages required prioritisation and a request budget
   (see Section~\ref{sec:acq}). \\
+\midrule[0.3pt]
 Cluster topology &
   Distributed, fault-tolerant services (implied) &
   One VM per environment; single-node Kafka, Schema Registry, Cassandra and Flink (1 TaskManager, 7 slots); HDFS with 3 DataNodes and replication 2 &
   Infrastructure is one VM each for stage and prod, so services run as single containers. Kafka and Cassandra use replication factor~1.
   The software and data flow are the same as in a cluster, so scaling out later needs configuration changes, not a redesign. \\
+\midrule[0.3pt]
 GeoIP enrichment &
   Client IP enriched with country and city (PM1 Figure~2) &
-  Not implemented; the client IP is kept as is &
-  \todo{Confirm the reason (e.g.\ the mirror is Polish, so location adds little) and whether it stays out of scope.} \\
+  Still planned, not yet implemented (work in progress); the client IP is stored as is, so it can be enriched later &
+  A large share of the traffic comes from outside Poland (e.g.\ the USA), so the client's country is a useful feature for bot detection.
+  Keeping the raw IP in all stored data lets the enrichment be added without re-ingesting. \\
+\midrule[0.3pt]
 Airflow &
   Daily DAGs pulling crantogit, PySpark, Cassandra refresh &
   Airflow 3 running; only a connectivity-check DAG exists &
   Platform work first; production DAGs follow the Spark jobs (see Section~\ref{sec:analytics}). \\
+\midrule[0.3pt]
 Batch storage &
   HDFS/Parquet by source and date &
   Parquet partitioned \texttt{dt=YYYY-MM-DD/hr=HH}; \texttt{raw}, \texttt{clean} and \texttt{raw\_\allowbreak{}bad} zones &
@@ -248,14 +261,14 @@ Category & Web server access log: package downloads from the Polish mirror (cran
 Source format & Apache common log, plain text &
   JSON (GitHub REST API, \texttt{/events}, \texttt{/orgs/\{o\}/events}, \texttt{/repos/\{o\}/\{r\}/events}) &
   CSV \\
-Inflow & Stream, $\sim$2--4 req/s (PM1 estimate; $\sim$7\,400 lines per hour in the sample file) \todo{measure on production logs} &
-  Stream by polling; volume depends on watch-list size \todo{measure events/hour from the poller run report} &
+Inflow & Stream, $\sim$2--4 req/s (PM1 estimate; $\sim$7\,400 lines per hour in the sample file); to be measured after deployment on stage/prod &
+  Stream by polling; volume depends on watch-list size; to be measured after deployment on stage/prod &
   Batch, one daily pull \\
-Avg.\ records & $\sim$170\,000--350\,000 lines/day \todo{verify} &
-  \todo{events/day} &
+Avg.\ records & $\sim$170\,000--350\,000 lines/day (estimate from 2--4 req/s) &
+  $\sim$800--1\,600 events/day (rough estimate: PM1 size estimate divided by $\sim$2.1\,KB per raw record in a 30-event sample) &
   $\sim$18\,000 rows \\
 Size & $\sim$500--700\,MB/month & $\sim$50--100\,MB/month & $\sim$1\,MB \\
-Time period & From the start of collection; history from the mirror \todo{state exact period} &
+Time period & From the start of collection; exact period to be stated after deployment on stage/prod &
   Live from the start of polling; first poll of a timeline returns up to 90 days (limited to 7 days by the Flink validation) &
   Current snapshot, refreshed daily \\
 Features & Client IP, timestamp, HTTP method, path, protocol, status, bytes sent &
@@ -276,7 +289,7 @@ Features & Client IP, timestamp, HTTP method, path, protocol, status, bytes sent
 \centering
 \includegraphics[width=\textwidth]{figures/fig_log_parsing.png}
 \caption{Parsing of a raw log line into attributes (from Milestone 1). The implemented pipeline uses the
-common log format without User-Agent, and no GeoIP enrichment.}
+common log format without User-Agent; the GeoIP enrichment shown here is planned (work in progress).}
 \end{figure}
 
 \hd{A2. Clean log record} (\texttt{cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}clean}, Avro \texttt{CranMirrorLogClean})
@@ -361,13 +374,13 @@ CRAN logs &
   -- removed by the download extraction job; bot, scanner and health-check traffic -- no User-Agent available;
   non-UTC offsets, future or very old timestamps -- rejected (\texttt{invalid\_\allowbreak{}status}, \texttt{invalid\_\allowbreak{}method},
   \texttt{future\_\allowbreak{}timestamp}, \texttt{stale\_\allowbreak{}timestamp}, \texttt{unparseable}); \texttt{-} as size -- stored as null.
-  \todo{Report the reject rate on a real run.} \\
+  The reject rate will be reported once the pipeline runs on stage/prod. \\
 GitHub events &
   Duplicates (at-least-once delivery and overlapping poll pages) -- removed on \texttt{event\_\allowbreak{}id}; stale history on first poll --
   rejected as \texttt{stale\_\allowbreak{}timestamp}; \texttt{PublicEvent} has the repository's creation date as \texttt{created\_\allowbreak{}at},
   so it is excluded from delay measurements; timelines hold at most 300 events, so a busy organisation can
   hide older events (mitigated by polling only mostly-R organisations); the 5\,000 req/h quota limits coverage of tier~2.
-  \todo{Report the number of events, duplicates and rejects from \texttt{scripts/check\_\allowbreak{}run.py}.} \\
+  Event, duplicate and reject counts (from \texttt{scripts/check\_\allowbreak{}run.py}) will be reported after deployment on stage/prod. \\
 crantogit &
   10--15\% of packages are not on GitHub; one repository can contain several packages; mapping may be outdated
   (renamed/moved repositories answer 404/410 -- the poller rechecks them after 7 days). \\
@@ -401,17 +414,17 @@ crantogit &
 \centering\small
 \begin{tabularx}{\textwidth}{@{}L{3.2cm}Y@{}}
 \toprule
-\textbf{Dependent (target)} & Client class (\texttt{human} / \texttt{bot}) for a client session. Labels: \todo{decide labelling -- heuristic rules (weak labels) or manual sample; no User-Agent available}. \\
+\textbf{Dependent (target)} & Client class (\texttt{human} / \texttt{bot}) for a client session. Labels: a combination of heuristic rules over the observed logs (e.g.\ request rate, share of 404s, non-package paths) that give weak labels, and manual verification of a sample of sessions. There is no User-Agent to label from. The result is meant to tune a \textbf{rate limiter} on the mirror, based on the observed difference between real and bot traffic; access to the mirror is not to be cut off entirely. \\
 \midrule
 \textbf{Independent} &
   Requests per session and per minute; mean inter-request time; share of 404/4xx; number of distinct packages;
   share of source vs binary artifacts; share of non-package paths; bytes per request; session duration;
-  share of requests to archived versions. \\
+  share of requests to archived versions; client country from GeoIP (planned), share of the session's requests coming from outside Poland. \\
 \midrule
 \textbf{Transformations} &
   Sessionisation per IP (gap $>$ 30\,min starts a new session); aggregation of session features from
   \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}clean} (full path is needed, hence the clean log topic rather than the downloads topic);
-  scaling; class imbalance handling. \\
+  GeoIP lookup of the client IP to a country (work in progress); scaling; class imbalance handling. \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -544,8 +557,8 @@ required; however, since raw topics are retained and raw files are stored immuta
   % ---- batch layer
   \node[batch] (hdfs) at (10,-6.5) {HDFS (Parquet)\\raw / clean / bad};
   \node[batch,plan] (spark) at (14,-6.5) {PySpark batch (WIP)\\features, training};
-  \node[batch,plan] (bt) at (10,-8.6) {Cassandra \texttt{batch\_*} (WIP)};
-  \node[batch,plan] (mlf) at (14,-8.6) {MLflow (WIP)\\tracking, registry};
+  \node[batch,plan] (bt) at (14,-8.6) {Cassandra \texttt{batch\_*} (WIP)};
+  \node[batch,plan] (mlf) at (10,-8.6) {MLflow (WIP)\\training, model registry};
   % ---- serving
   \node[shared,plan] (st) at (8,-11.0) {Streamlit dashboard (WIP)};
   % ---- flows
@@ -562,7 +575,8 @@ required; however, since raw topics are retained and raw files are stored immuta
   \draw[pflow] (af) -- (spark.north);
   \draw[pflow] (spark) -- (mlf);
   \draw[pflow] (spark) -- (bt);
-  \draw[pflow] (mlf) -- (bt);
+  \draw[pflow] (mlf.west) -- (6.0,-8.6) -- (6.0,-7.15);
+  \node[font=\tiny,align=center,text=black!70] at (6.55,-7.95) {models for\\inference};
   \draw[pflow] (rt.south) |- (st.west);
   \draw[pflow] (bt.south) |- (st.east);
   % ---- legend
@@ -587,7 +601,7 @@ serving layer in grey, shared components in white; dashed = work in progress).}
         (raw, clean, bad) $\to$ Flink download extraction $\to$ \texttt{cran\_\allowbreak{}mirror\_\allowbreak{}package\_\allowbreak{}downloads} + HDFS.
   \item \textbf{GitHub:} crantogit $\to$ watch-list $\to$ poller $\to$ \texttt{github\_\allowbreak{}repo\_\allowbreak{}updates} (+ \texttt{github\_\allowbreak{}repo\_\allowbreak{}list}) $\to$
         Flink ingest $\to$ \texttt{github\_\allowbreak{}repo\_\allowbreak{}updates\_\allowbreak{}clean} + HDFS.
-  \item \textbf{Speed path} \planned: clean topics $\to$ Flink windows and joins (and model inference) $\to$ Cassandra \texttt{rt\_\allowbreak{}*} $\to$ Streamlit.
+  \item \textbf{Speed path} \planned: clean topics $\to$ Flink windows and joins, and inference with models taken from MLflow, $\to$ Cassandra \texttt{rt\_\allowbreak{}*} $\to$ Streamlit.
   \item \textbf{Batch path} \planned: HDFS Parquet $\to$ PySpark (scheduled by Airflow) $\to$ features and forecasts $\to$ MLflow and Cassandra \texttt{batch\_\allowbreak{}*} $\to$ Streamlit.
 \end{enumerate}
 
@@ -615,43 +629,139 @@ Deployment & Docker Compose (dev / stage / prod env files), stage and prod VMs o
 \end{tabularx}
 \end{table}
 
-\subsection{Deployment environments}
+% =====================================================================
+\section{Environments and Deployment}\label{sec:env}
+% =====================================================================
 
-The system runs in three environments, all deployed with Docker Compose from the same \texttt{docker-compose.yml}; only the
-environment file (\texttt{deploy/stage.env}, \texttt{deploy/prod.env}) differs. Stage and prod are two identical virtual machines on the
-same network as the CRAN mirror, each with a static IP address.
+The whole platform is containerised and reproducible. Three environments -- \textbf{dev}, \textbf{stage} and \textbf{prod} -- are up and running.
+They are created from \emph{one} \texttt{docker-compose.yml}; what differs between them is only an environment file and the set of Compose
+\emph{profiles}. A new environment is therefore a copy of an env file, not a new set of manifests.
 
-\begin{table}[H]
+\subsection{The three environments}
+
+Dev is for development on a laptop, stage is for checking a change on the real network before it reaches prod, and prod is the
+deployment that will read the mirror's logs. Stage and prod run identical software with different env files. The table compares them.
+
+\begin{table}[htbp]
 \centering
-\caption{Deployment environments.}
+\caption{Dev, stage and prod compared.}
 \small
-\begin{tabularx}{\textwidth}{@{}L{2.4cm}L{4.2cm}L{3.2cm}Y@{}}
+\begin{tabularx}{\textwidth}{@{}L{2.9cm}L{4.4cm}Y@{}}
 \toprule
-\textbf{Environment} & \textbf{Host} & \textbf{Storage} & \textbf{Notes} \\
+\textbf{Aspect} & \textbf{Dev} & \textbf{Stage and prod} \\
 \midrule
-Dev & Developer machines & Docker named volumes & One HDFS DataNode; log generator and GitHub poller started on demand (\texttt{deploy/up.sh}) \\
-Stage & VM, 16 cores, 64\,GB RAM, static IP, same network as the mirror & 100\,GB SSD, 1\,TB HDD; bind mounts under \texttt{/srv/bigdata/} & Three HDFS DataNodes, replication~2 (\texttt{COMPOSE\_PROFILES=ha}); \texttt{deploy/stage.env} \\
-Prod & VM, 16 cores, 64\,GB RAM, static IP, same network as the mirror & 100\,GB SSD, 1\,TB HDD; bind mounts under \texttt{/srv/bigdata/} & As stage; Airflow secrets in an untracked \texttt{prod.secrets.env}; \texttt{deploy/prod.env} \\
+Host & Developer machine & Two identical VMs (16 cores, 64\,GB RAM, 100\,GB SSD, 1\,TB HDD), static IPs, same network as the CRAN mirror \\
+Configuration & Defaults (no env file) & \texttt{deploy/stage.env}, \texttt{deploy/prod.env}, plus an untracked secrets file \\
+Data storage & Docker named volumes & Bind mounts under \texttt{/srv/bigdata/\{kafka,\allowbreak hdfs,\allowbreak cassandra,\allowbreak airflow,\allowbreak poller\}} \\
+Published on & \texttt{127.0.0.1} only & The VM's static address (\texttt{BIND\_ADDRESS}); Kafka advertises it (\texttt{KAFKA\_EXTERNAL\_HOST}) \\
+HDFS & 1 DataNode, replication 1 & 3 DataNodes, replication 2 (\texttt{COMPOSE\_PROFILES=ha}) \\
+CRAN logs & Log generator & Filebeat on the mirror (work in progress) \\
+GitHub watch-list & Limited to the tier-1 organisations plus 100 other owners & All owners (\texttt{POLLER\_WATCHLIST\_MAX\_OWNERS=0}) \\
+Secrets & Dev defaults in the compose file & Real Airflow passwords and Fernet key in an untracked file (\texttt{prod.secrets.env}, \texttt{stage.secrets.env}) \\
+Access & Local & SSH through a bastion host \\
+Reset & \texttt{deploy/dev\_clean.sh} & Never wiped by a script \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\begin{itemize}
-  \item \textbf{Access:} both VMs are reached over SSH through a bastion host, so they are not directly reachable from outside.
-  \item \textbf{Network:} services are published only on the VM's static address (\texttt{BIND\_ADDRESS}), and Kafka advertises it to
-        external clients (\texttt{KAFKA\_EXTERNAL\_HOST}).
-  \item \textbf{Deployment:} Docker Compose; \texttt{deploy/init.sh} creates the Kafka topics, registers the Avro schemas, creates the HDFS
-        directories and the Cassandra keyspace.
-  \item \textbf{Disk layout:} the 100\,GB SSD holds the operating system, Docker images, Kafka, Cassandra, the Airflow metadata
-        database and the HDFS NameNode metadata (latency-sensitive, small). The 1\,TB HDD holds the HDFS DataNode blocks, i.e.\ the
-        growing raw and clean history, which is written and read sequentially. Every data path is an environment variable
-        (\texttt{KAFKA\_DATA\_DIR}, \texttt{CASSANDRA\_DATA\_DIR}, \texttt{HDFS\_DATANODE*\_DIR}, \ldots), so if the SSD turns out too small a component can be moved to the HDD by
-        changing the env file only.
-\end{itemize}
+\subsection{Docker Compose profiles}
 
-Being on the mirror's network means that Filebeat on the mirror can produce log lines to Kafka over the internal network, without
-exposing the broker to the internet, and the static addresses give clients a stable bootstrap address. The three HDFS DataNodes of the
-\texttt{ha} profile run on one VM, so replication~2 protects against the loss of a DataNode container or its disk, but not against the loss of the VM.
+Services that exist in every environment have no profile. Optional ones are selected with a profile, which keeps the same file usable
+on a laptop and on a VM.
+
+\begin{table}[htbp]
+\centering
+\caption{Compose profiles.}
+\small
+\begin{tabularx}{\textwidth}{@{}L{1.8cm}L{6.2cm}Y@{}}
+\toprule
+\textbf{Profile} & \textbf{Services} & \textbf{Purpose} \\
+\midrule
+(none) & Kafka, Schema Registry, NameNode, DataNode~1, Flink JobManager and TaskManager, the two CRAN Flink jobs, Cassandra, Airflow with its Postgres database & Core platform, in every environment \\
+\texttt{ha} & DataNode~2, DataNode~3 & Replicated HDFS on stage and prod \\
+\texttt{dev} & Mirror log generator (about 4 events/s) & Simulated CRAN logs until Filebeat is in place \\
+\texttt{github} & GitHub poller, Flink GitHub-events job & Needs a \texttt{GITHUB\_TOKEN}, so it is started explicitly \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Environment-specific values are variables with safe dev defaults, so an empty env file gives a working local stack:
+
+\begin{table}[htbp]
+\centering
+\caption{Main environment variables.}
+\small
+\begin{tabularx}{\textwidth}{@{}L{5.2cm}Y@{}}
+\toprule
+\textbf{Variable} & \textbf{Effect} \\
+\midrule
+\texttt{BIND\_ADDRESS}, \texttt{KAFKA\_EXTERNAL\_HOST} & Interface on which ports are published, and the address Kafka advertises to outside clients \\
+\texttt{KAFKA\_DATA\_DIR}, \texttt{HDFS\_*\_DIR}, \texttt{CASSANDRA\_DATA\_DIR}, \texttt{AIRFLOW\_POSTGRES\_DIR}, \texttt{POLLER\_DATA\_DIR} & Where each component stores data (a named volume when unset); lets a component be moved between the SSD and the HDD \\
+\texttt{HDFS\_REPLICATION} & HDFS replication factor (also passed to the Flink HDFS client) \\
+\texttt{COMPOSE\_PROFILES} & Profiles started by default (\texttt{ha} on stage and prod) \\
+\texttt{POLLER\_WATCHLIST\_MAX\_OWNERS} & Size of the GitHub watch-list \\
+\texttt{AIRFLOW\_ADMIN\_PASSWORD}, \texttt{AIRFLOW\_DB\_PASSWORD}, \texttt{AIRFLOW\_FERNET\_KEY} & Airflow secrets, set before the first start \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Virtual machines}
+
+Stage and prod are two identical VMs, both allocated and reachable over SSH through a bastion host, so they are not directly exposed.
+Each has 16 cores, 64\,GB RAM, a 100\,GB SSD and a 1\,TB HDD, and a static IP address on the same network as the CRAN mirror.
+Filebeat on the mirror can therefore produce log lines to Kafka over the internal network, without exposing the broker to the
+internet, and the static addresses give clients a stable bootstrap address.
+
+\paragraph*{Disk layout.} The SSD holds the operating system, Docker images, Kafka, Cassandra, the Airflow metadata database and the HDFS NameNode
+metadata (latency-sensitive, small). The HDD holds the HDFS DataNode blocks, i.e.\ the growing raw and clean history, which is written and
+read sequentially. Every data path is an environment variable, so if the SSD turns out too small, a component can be moved to the HDD by
+changing the env file only.
+
+\paragraph*{Sizing.} The configured memory is small compared with the host: Flink 1\,GB (JobManager) plus 3\,GB (TaskManager, 7 slots),
+Kafka heap 512\,MB, Schema Registry 384\,MB, Cassandra 512\,MB by default (\texttt{CASSANDRA\_MAX\_HEAP}). This leaves room for Spark and MLflow, which are not yet deployed.
+
+\paragraph*{Replication on one VM.} The three HDFS DataNodes of the \texttt{ha} profile run on one VM, so replication~2 protects against
+the loss of a DataNode container or its disk, but not against the loss of the VM. Kafka and Cassandra run as single nodes with replication factor~1.
+
+\subsection{Deployment procedure}
+
+Deployment is a sequence of idempotent scripts; each can be re-run safely and passes extra arguments through to \texttt{docker compose},
+so the same scripts serve every environment.
+
+\Needspace{16\baselineskip}
+\begin{lstlisting}
+# 1. Structure: containers, topics, Avro schemas, HDFS directories, Cassandra keyspace
+deploy/up.sh                                   # dev
+deploy/up.sh --env-file deploy/prod.env --env-file deploy/prod.secrets.env
+
+# 2. Data sources (nothing generates data until asked)
+deploy/start_logs.sh      # simulated CRAN logs (until Filebeat is in place)
+deploy/start_github.sh    # watch-list, GitHub poller and its Flink job (needs GITHUB_TOKEN)
+
+# Checks and reset
+deploy/inspect.sh         # read-only overview: HDFS, Kafka lag, Flink jobs, Airflow health
+deploy/dev_clean.sh       # dev only: removes containers and the dev volumes
+\end{lstlisting}
+
+\texttt{deploy/up.sh} runs \texttt{docker compose up -d --build} and then \texttt{deploy/init.sh}, which calls four scripts in order:
+\texttt{kafka\_init.sh} (topics, 3 partitions, plus the compacted \texttt{\_schemas} topic of the registry), \texttt{schema\_init.sh}
+(registers every Avro schema), \texttt{hdfs\_init.sh} (waits for HDFS to leave safe mode, creates the \texttt{raw}, \texttt{clean} and \texttt{bad} directories)
+and \texttt{cassandra\_init.sh} (the \texttt{cran\_analytics} keyspace). \texttt{deploy/dev\_clean.sh} only touches the dev named volumes and never the
+\texttt{/srv/bigdata} directories of stage and prod.
+
+\subsection{Operational properties}
+
+\begin{itemize}
+  \item \textbf{Start-up order} is enforced with health checks and \texttt{depends\_on: service\_healthy} (for example Flink jobs wait for Kafka, the Schema Registry,
+        HDFS and a live DataNode), so a cold start does not need manual sequencing.
+  \item \textbf{Self-healing:} every service has \texttt{restart: unless-stopped}; each Flink job runs in its own container that resubmits it if the job or
+        the JobManager dies; Flink checkpoints go to HDFS (every 60\,s) and the Parquet files are finalised on checkpoint.
+  \item \textbf{State outside the containers:} schemas live in a Kafka topic, Airflow task logs are uploaded to HDFS and removed locally, the
+        GitHub poller keeps its ETags and seen event ids in a mounted volume, so containers can be recreated without losing state.
+  \item \textbf{Reproducibility:} all image versions are pinned (Kafka 4.3.2, Schema Registry 8.4.1, Hadoop 3.4.2, Flink 1.20.3, Cassandra 5.0.9,
+        Airflow 3.4.0, Postgres 16); custom images (PyFlink, Airflow, poller, log generator) are built from the repository.
+  \item \textbf{Security:} ports are bound to the VM's address only, access is through the bastion, and secrets live in git-ignored files.
+\end{itemize}
 
 % =====================================================================
 \section{Analytical Approach}\label{sec:analytics}
@@ -666,7 +776,7 @@ exposing the broker to the internet, and the static addresses give clients a sta
 \textbf{Task} & \textbf{Type} & \textbf{Mode} & \textbf{Method (candidate)} & \textbf{Presentation} \\
 \midrule
 A. Hourly load forecast (7\,d) & Regression / time series & Batch training, daily forecast & Gradient boosting on lag features; seasonal baseline & Forecast curve with confidence band; maintenance-window suggestion \\
-B. Bot / CI detection & Classification & Batch training; stream inference & Random forest / gradient boosting on session features; rule-based baseline & Share of bot traffic over time; list of flagged clients \\
+B. Bot / CI detection & Classification & Batch training; stream inference & Random forest / gradient boosting on session features; rule-based baseline & Share of bot traffic over time; list of flagged clients; observed real vs.\ bot rates as input for rate-limit thresholds \\
 C. Release-to-download lag & Statistical analysis & Batch & Peak detection on hourly series after the release timestamp & Per-package lag chart, version migration curves \\
 D. Surge detection & Anomaly detection & Stream & Windowed count vs.\ rolling baseline (Flink) & Real-time alerts \\
 E. Top packages and error rates & Descriptive aggregation & Stream (windows) + batch (history) & Sliding/tumbling windows; daily Spark aggregates & Live top-$N$ table, error rate, velocity \\
@@ -738,7 +848,7 @@ via crantogit, maintains rolling aggregations, serves reconciled views).
 \end{figure}
 
 \subsection{Team members and task allocation}
-Unchanged from Milestone 1 (R -- responsible, S -- supporting); see the Milestone 1 report. \todo{Update the allocation table if the actual split of work changed, and add one for the Milestone 2 tasks (report, tests).}
+Unchanged from Milestone 1 (R -- responsible, S -- supporting); see the Milestone 1 report.
 
 \subsection{Use of GenAI tools}
 Generative AI tools are used to research data sources, draft project documentation and diagrams, and generate code. Each AI-assisted task follows the
