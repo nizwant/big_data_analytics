@@ -25,7 +25,7 @@ class Config:
     github_token: str
     data_dir: Path
     watchlist_path: Path
-    global_track_enabled: bool = True
+    global_track_enabled: bool = False
     global_max_pages: int = 3
     global_min_interval_s: float = 60
     watchlist_max_pages: int = 3
@@ -37,6 +37,7 @@ class Config:
     # Watch-list build (python -m gh_poller.watchlist)
     crantogit_url: str = DEFAULT_CRANTOGIT_URL
     org_min_r_share: float = 0.5
+    watchlist_max_owners: int = 0  # 0: all owners; else all tier-1 owners plus this many others
     # Outputs: Kafka when KAFKA_BOOTSTRAP_SERVERS is set, daily JSONL files when EVENTS_JSONL is on
     kafka_bootstrap_servers: str | None = None
     kafka_topic: str = "github_repo_updates"
@@ -70,7 +71,7 @@ def load_config(env_file: str | None = ".env") -> Config:
         github_token=token,
         data_dir=data_dir,
         watchlist_path=Path(env.get("WATCHLIST_PATH") or data_dir / "watchlist.csv"),
-        global_track_enabled=_bool(env.get("GLOBAL_TRACK_ENABLED"), True),
+        global_track_enabled=_bool(env.get("GLOBAL_TRACK_ENABLED"), False),
         global_max_pages=int(env.get("GLOBAL_MAX_PAGES", "3")),
         global_min_interval_s=float(env.get("GLOBAL_MIN_INTERVAL_S", "60")),
         watchlist_max_pages=int(env.get("WATCHLIST_MAX_PAGES", "3")),
@@ -81,6 +82,7 @@ def load_config(env_file: str | None = ".env") -> Config:
         api_url=env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
         crantogit_url=env.get("CRANTOGIT_URL", "").strip() or DEFAULT_CRANTOGIT_URL,
         org_min_r_share=float(env.get("ORG_MIN_R_SHARE", "0.5")),
+        watchlist_max_owners=int(env.get("WATCHLIST_MAX_OWNERS") or "0"),
         kafka_bootstrap_servers=env.get("KAFKA_BOOTSTRAP_SERVERS", "").strip() or None,
         kafka_topic=env.get("KAFKA_TOPIC", "").strip() or "github_repo_updates",
         watchlist_topic=env.get("WATCHLIST_TOPIC", "").strip() or "github_repo_list",

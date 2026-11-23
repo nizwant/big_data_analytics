@@ -89,6 +89,16 @@ def repos_by_owner(packages: list[Package]) -> dict[str, set[str]]:
     return repos
 
 
+def limit_owners(packages: list[Package], max_owners: int, tier1: tuple[str, ...] = TIER1_ORGS) -> list[Package]:
+    """Keeps all tier-1 owners and the max_owners other owners with the most repos (ties by name); 0 keeps all."""
+    if max_owners <= 0:
+        return packages
+    repos = repos_by_owner(packages)
+    others = sorted((o for o in repos if o not in tier1), key=lambda o: (-len(repos[o]), o))
+    keep = set(others[:max_owners]) | set(tier1)
+    return [p for p in packages if p.owner in keep]
+
+
 def owners_to_look_up(packages: list[Package], tier1: tuple[str, ...] = TIER1_ORGS) -> list[str]:
     """Owners whose account type decides the endpoint: two or more repos and not a tier-1 organisation."""
     return sorted(o for o, repos in repos_by_owner(packages).items() if len(repos) >= 2 and o not in tier1)
@@ -242,7 +252,7 @@ def publish_watchlist(rows: list[Row], cfg: Config, producer=None) -> int:
 
 async def build(cfg: Config, producer=None) -> list[str]:
     """crantogit.csv -> watchlist.csv (and github_repo_list if Kafka is set); returns summary lines."""
-    packages = parse_crantogit(await read_source(cfg.crantogit_url))
+    packages = limit_owners(parse_crantogit(await read_source(cfg.crantogit_url)), cfg.watchlist_max_owners)
     cache = AccountCache(account_cache_path(cfg))
     owners = owners_to_look_up(packages)
     async with httpx.AsyncClient(

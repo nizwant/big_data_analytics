@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prints an overview of the running stack: HDFS contents, Kafka topics and offsets,
-# the Flink consumer group lag and the Flink job state. Read-only.
+# the Flink consumer group lag and the Flink cluster, job and checkpoint state. Read-only.
 # Extra arguments are passed to `docker compose`, e.g.:
 #   deploy/inspect.sh --env-file deploy/prod.env
 set -uo pipefail
@@ -53,7 +53,12 @@ done
 
 for group in "${GROUPS_TO_SHOW[@]}"; do
   section "Kafka: consumer group $group (lag)"
-  kafka kafka-consumer-groups.sh --describe --group "$group" || echo "(no committed offsets yet)"
+  out=$(kafka kafka-consumer-groups.sh --describe --group "$group")
+  if [[ -z "$out" || "$out" == *GroupIdNotFoundException* ]]; then
+    echo "(no committed offsets yet: no data consumed, or the job is not running)"
+  else
+    echo "$out"
+  fi
 done
 
 section "Schema registry: subjects (latest version)"
@@ -65,10 +70,33 @@ for subject in json.load(urllib.request.urlopen(base + "/subjects", timeout=10))
     print("%s  version=%s id=%s" % (subject, latest["version"], latest["id"]))
 ' 2>/dev/null || echo "(schema registry not reachable)"
 
-section "Flink: jobs"
-"${DC[@]}" exec -T jobmanager curl -s http://localhost:8081/jobs/overview 2>/dev/null \
-  | python3 -c 'import sys, json; [print(j["state"], j["name"][:70]) for j in json.load(sys.stdin)["jobs"]]' \
-  2>/dev/null || echo "(jobmanager not reachable)"
+section "Flink: cluster and jobs"
+"${DC[@]}" exec -T jobmanager python3 -c '
+import json, urllib.request
+base = "http://localhost:8081"
+get = lambda path: json.load(urllib.request.urlopen(base + path, timeout=10))
+c = get("/overview")
+print("taskmanagers=%s slots=%s free=%s" % (c["taskmanagers"], c["slots-total"], c["slots-available"]))
+jobs = get("/jobs/overview")["jobs"]
+if not jobs:
+    print("(no jobs; the GitHub job starts with deploy/start_github.sh)")
+for j in sorted(jobs, key=lambda j: j["name"]):
+    t = j["tasks"]
+    print("%s  %s  uptime=%ds  tasks running=%d/%d failed=%d" % (
+        j["state"], j["name"][:60], j["duration"] // 1000, t["running"], t["total"], t["failed"]))
+    try:
+        cp = get("/jobs/%s/checkpoints" % j["jid"])
+        done = cp["counts"]["completed"]
+        print("  checkpoints completed=%d failed=%d" % (done, cp["counts"]["failed"]))
+    except Exception:
+        pass
+    try:
+        exc = get("/jobs/%s/exceptions" % j["jid"]).get("exceptionHistory", {}).get("entries", [])
+        if exc:
+            print("  last exception: " + exc[0]["exceptionName"])
+    except Exception:
+        pass
+' 2>/dev/null || echo "(jobmanager not reachable)"
 
 section "Airflow: components"
 "${DC[@]}" exec -T airflow curl -s http://localhost:8080/api/v2/monitor/health 2>/dev/null \

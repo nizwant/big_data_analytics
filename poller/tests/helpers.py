@@ -18,6 +18,7 @@ def make_cfg(tmp_path: Path) -> Config:
         watchlist_path=tmp_path / "watchlist.csv",
         user_agent="test",
         api_url=API,
+        global_track_enabled=True,
     )
 
 
