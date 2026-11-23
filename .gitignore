@@ -220,3 +220,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Scratch directory for temporary files
+scratch
