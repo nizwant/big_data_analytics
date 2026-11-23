@@ -1,0 +1,304 @@
+[
+  {
+    "id": "FA-01",
+    "group": "Acquisition",
+    "title": "Log source (log generator; Filebeat later) delivers log lines to Kafka",
+    "objective": "Check that the current CRAN log source, the log generator that simulates the mirror until Filebeat is deployed, delivers well-formed access-log lines to the raw topic. It tests the interface (topic, line format) that Filebeat must also meet, not Filebeat itself.",
+    "steps": [
+      "Read the end offsets of cran_mirror_logs, wait 10 s, read them again.",
+      "Read a sample of messages and match each against the Apache common log format."
+    ],
+    "expected": "At least 20 new messages in 10 s; every sampled message is a valid common-log line.",
+    "status": "PASS",
+    "actual": "39 messages in 10 s; 200/200 sampled lines are valid common-log lines.",
+    "seconds": 10.090352535247803
+  },
+  {
+    "id": "FA-02",
+    "group": "Acquisition",
+    "title": "Platform initialisation: topics, schemas, HDFS directories",
+    "objective": "Check that deploy/init.sh created everything the acquisition modules write to.",
+    "steps": [
+      "Describe the Kafka topics.",
+      "List the Schema Registry subjects.",
+      "List the HDFS raw and clean directories."
+    ],
+    "expected": "Six topics with 3 partitions, three Avro subjects and eight HDFS directories exist.",
+    "status": "PASS",
+    "actual": "6 topics (3 partitions), 3 Avro subjects and 8 HDFS data directories exist.",
+    "seconds": 7.208881616592407
+  },
+  {
+    "id": "FA-03",
+    "group": "Acquisition",
+    "title": "GitHub poller unit tests (mocked HTTP)",
+    "objective": "Check the poller logic offline: ETags, rate limits, scheduling, retries, watch-list, Kafka sink, state.",
+    "steps": [
+      "Run pytest -m 'not live' in poller/."
+    ],
+    "expected": "All tests pass.",
+    "status": "PASS",
+    "actual": "pytest -m 'not live': 107 passed, 5 deselected in 3.56s.",
+    "seconds": 4.111326694488525
+  },
+  {
+    "id": "FA-04",
+    "group": "Acquisition",
+    "title": "GitHub poller live tests (real API)",
+    "objective": "Check the poller against the real GitHub Events API with the project token.",
+    "steps": [
+      "Run pytest -m live in poller/ with GITHUB_TOKEN set."
+    ],
+    "expected": "All live tests pass.",
+    "status": "PASS",
+    "actual": "pytest -m live (real GitHub API): 5 passed, 107 deselected in 7.74s.",
+    "seconds": 8.251344442367554
+  },
+  {
+    "id": "FA-05",
+    "group": "Acquisition",
+    "title": "Watch-list build from crantogit and publication to Kafka",
+    "objective": "Check that the watch-list is built from crantogit.csv and published to github_repo_list.",
+    "steps": [
+      "Read /data/watchlist.csv from the poller container as a DataFrame.",
+      "Validate columns, tiers and endpoints.",
+      "Read github_repo_list and compare the rows of the latest build."
+    ],
+    "expected": "Valid watch-list; the latest build published exactly the rows of the file.",
+    "status": "PASS",
+    "actual": "2627 watch-list rows ({2: 1983, 1: 644}), all published to github_repo_list.",
+    "seconds": 0.29731249809265137
+  },
+  {
+    "id": "FA-06",
+    "group": "Acquisition",
+    "title": "GitHub events reach Kafka with the documented format",
+    "objective": "Check the structure, keys and package matching of the events written by the poller.",
+    "steps": [
+      "Read all messages of github_repo_updates.",
+      "Check the keys, mandatory fields, track values and package matching."
+    ],
+    "expected": "Key = repository name; every message has the documented fields; events are matched to CRAN packages.",
+    "status": "PASS",
+    "actual": "4814 events in Kafka, keys correct, 3811 matched to CRAN packages.",
+    "seconds": 0.22904062271118164
+  },
+  {
+    "id": "FA-07",
+    "group": "Acquisition",
+    "title": "API limit handling: conditional requests and quota",
+    "objective": "Check from the poller's own request log that ETags are used and the quota is respected.",
+    "steps": [
+      "Read the request log of the poller (requests-*.jsonl) as a DataFrame.",
+      "Count polls by HTTP status.",
+      "Check rate-limit flags and the remaining quota."
+    ],
+    "expected": "Both 200 and 304 responses occur; no rate limit; remaining quota stays above the reserve.",
+    "status": "PASS",
+    "actual": "588 polls, statuses {200: 554, 304: 34}; no rate limit; minimum remaining quota 4303.",
+    "seconds": 0.20331335067749023
+  },
+  {
+    "id": "FA-08",
+    "group": "Acquisition",
+    "title": "Poller restart does not duplicate events",
+    "objective": "Check that the poller keeps its state (ETags, written event ids) across a restart.",
+    "steps": [
+      "Record the event ids in github_repo_updates.",
+      "Restart the poller container and wait for several poll rounds.",
+      "Check in the poller's request log that it polled again and that polls after the restart got 304 (ETags kept).",
+      "Check that no event id occurs twice and earlier events are still present."
+    ],
+    "expected": "Polls after the restart; some answered 304; no duplicate event ids.",
+    "status": "PASS",
+    "actual": "214 polls after the restart ({200: 205, 304: 9}); 8031 distinct events, 0 duplicates.",
+    "seconds": 0.3446199893951416
+  },
+  {
+    "id": "FP-01",
+    "group": "Pre-processing",
+    "title": "Valid CRAN log lines are parsed into the clean topic",
+    "objective": "Check the parsing of the Flink log job for valid lines.",
+    "steps": [
+      "Produce six valid test lines to cran_mirror_logs.",
+      "Read them from cran_mirror_logs_clean (Avro).",
+      "Compare every field with the input."
+    ],
+    "expected": "All six lines arrive with correct fields; '-' size becomes null.",
+    "status": "PASS",
+    "actual": "All 6 valid test lines reached cran_mirror_logs_clean with correct fields; '-' size became null.",
+    "seconds": 0.08771252632141113
+  },
+  {
+    "id": "FP-02",
+    "group": "Pre-processing",
+    "title": "Invalid CRAN log lines are rejected with a reason",
+    "objective": "Check that invalid lines are kept in the bad zone and never reach the clean data.",
+    "steps": [
+      "Produce six invalid lines (garbage, status 999, method FOO, +1 day, -30 days, offset +0200).",
+      "Read /data/raw/cran_mirror_logs_bad as a DataFrame.",
+      "Compare reject_reason with the expectation.",
+      "Check the clean topic."
+    ],
+    "expected": "Each line is in the bad zone with the expected reason and absent from the clean topic.",
+    "status": "PASS",
+    "actual": "6/6 invalid lines were rejected with the expected reject_reason and none reached the clean topic.",
+    "seconds": 60.64871788024902
+  },
+  {
+    "id": "FP-03",
+    "group": "Pre-processing",
+    "title": "Package downloads are extracted from the clean log",
+    "objective": "Check the download extraction job: package, version, artifact type, target system, outcome.",
+    "steps": [
+      "Use the valid test lines of FP-01 (source, macOS, Windows, a 404, PACKAGES.rds, an HTML page).",
+      "Read cran_mirror_package_downloads (Avro).",
+      "Compare the derived fields; check the skipped requests."
+    ],
+    "expected": "Four downloads with correct fields (404 = FAILURE); the two non-package requests are skipped.",
+    "status": "PASS",
+    "actual": "4/4 package requests were extracted correctly (source, macos, windows, 404 as FAILURE); 2 non-downloads skipped.",
+    "seconds": 0.07273721694946289
+  },
+  {
+    "id": "FP-04",
+    "group": "Pre-processing",
+    "title": "GitHub events: mapping and deduplication",
+    "objective": "Check the GitHub Flink job: field extraction, nullable fields and removal of repeated event ids.",
+    "steps": [
+      "Produce a ReleaseEvent twice and a PushEvent without organisation to github_repo_updates.",
+      "Read github_repo_updates_clean (Avro).",
+      "Compare the fields; count the occurrences of the repeated event."
+    ],
+    "expected": "The repeated event appears once; fields are mapped; missing organisation is null.",
+    "status": "PASS",
+    "actual": "Duplicate event kept once; release_tag, ref, packages and nullable org_login mapped correctly.",
+    "seconds": 0.1286182403564453
+  },
+  {
+    "id": "FP-05",
+    "group": "Pre-processing",
+    "title": "Invalid GitHub records are rejected with a reason",
+    "objective": "Check the validation rules of the GitHub job.",
+    "steps": [
+      "Produce five invalid records (30 days old, track 'other', not JSON, no repo name, invalid timestamp).",
+      "Read /data/raw/github_repo_updates_bad as a DataFrame.",
+      "Compare reject_reason; check the clean topic."
+    ],
+    "expected": "Each record is in the bad zone with the expected reason and absent from the clean topic.",
+    "status": "PASS",
+    "actual": "5/5 invalid GitHub events were rejected with the expected reject_reason.",
+    "seconds": 25.92304801940918
+  },
+  {
+    "id": "FP-06",
+    "group": "Pre-processing",
+    "title": "Raw records are stored unchanged",
+    "objective": "Check that the raw zone keeps every input record byte for byte, valid or not.",
+    "steps": [
+      "Read the text files of /data/raw/cran_mirror_logs and /data/raw/github_repo_updates.",
+      "Look for each injected record."
+    ],
+    "expected": "All injected records are present unchanged.",
+    "status": "PASS",
+    "actual": "All 12 injected log lines and 8 injected GitHub records are stored unchanged in the raw zone.",
+    "seconds": 114.17939019203186
+  },
+  {
+    "id": "Q-01",
+    "group": "Quality",
+    "title": "Schema conformance and value constraints",
+    "objective": "Check that the Parquet files have the columns of the Avro schemas and that values satisfy the constraints Avro cannot express. Decoding the Kafka messages is only a sanity check: the jobs write them with the registered schema.",
+    "steps": [
+      "Decode every message of the three derived topics with the schema from the registry.",
+      "Compare the Parquet columns with the Avro fields.",
+      "Check status range, methods, allowed values."
+    ],
+    "expected": "Everything decodes; columns match; all constraints hold.",
+    "status": "PASS",
+    "actual": "All three clean topics decode with the registry schema; Parquet columns match; value constraints hold.",
+    "seconds": 1398.951967716217
+  },
+  {
+    "id": "Q-02",
+    "group": "Quality",
+    "title": "No duplicate GitHub events in the clean data",
+    "objective": "Check that deduplication on event_id works on the live data.",
+    "steps": [
+      "Count distinct event ids in the clean topic and in the Parquet files.",
+      "Compare with the raw topic."
+    ],
+    "expected": "No event id occurs twice in the clean data.",
+    "status": "PASS",
+    "actual": "2905 clean events, 0 duplicates (topic and Parquet); 1 repeated raw records were dropped.",
+    "seconds": 2.3932955265045166
+  },
+  {
+    "id": "Q-03",
+    "group": "Quality",
+    "title": "Completeness: no record is lost between raw, clean and rejected",
+    "objective": "Check that raw = clean + rejected for the CRAN logs, and that Kafka and HDFS agree.",
+    "steps": [
+      "Stop the producers and wait until the Flink consumer lag is 0 and the files are finalised.",
+      "Count the raw topic, raw text, clean topic, clean Parquet and bad Parquet."
+    ],
+    "expected": "raw = clean + rejected; topic counts equal file counts.",
+    "status": "PASS",
+    "actual": "2462 raw lines = 2456 clean + 6 rejected; Kafka and HDFS counts agree.",
+    "seconds": 69.89330959320068
+  },
+  {
+    "id": "Q-04",
+    "group": "Quality",
+    "title": "Partitioning by event time",
+    "objective": "Check that Parquet files are in the dt/hr directory of the record's time.",
+    "steps": [
+      "Read the Parquet datasets and compare dt and hr with event_ts (arrival_ts for rejects)."
+    ],
+    "expected": "Every row is in the correct partition.",
+    "status": "PASS",
+    "actual": "All Parquet rows are in the partition matching their event time (rejected lines: arrival time).",
+    "seconds": 8.704564332962036
+  },
+  {
+    "id": "Q-05",
+    "group": "Quality",
+    "title": "Keys and partition locality",
+    "objective": "Check that records of one package or repository stay in one partition.",
+    "steps": [
+      "Group the downloads topic by package_name and the GitHub topic by repo_name.",
+      "Count partitions per key."
+    ],
+    "expected": "Exactly one partition per key; key equals the field.",
+    "status": "PASS",
+    "actual": "Records with the same package_name / repo_name always go to the same partition, so their order is kept.",
+    "seconds": 0.26906681060791016
+  },
+  {
+    "id": "Q-06",
+    "group": "Quality",
+    "title": "Reject accounting",
+    "objective": "Check that rejections happen only for the documented reasons and only where expected.",
+    "steps": [
+      "Count the rejected CRAN lines by reason and compare them with the injected invalid lines.",
+      "Count the rejected GitHub records by reason."
+    ],
+    "expected": "CRAN rejects are exactly the injected ones; GitHub reasons are documented, stale history is rejected.",
+    "status": "PASS",
+    "actual": "CRAN: 6 rejects, all of them injected test lines. GitHub: 2219 rejects ({'stale_timestamp': 2215, 'invalid_track': 1, 'unparseable': 1, 'missing_field': 1, 'invalid_timestamp': 1}), 2905 clean events.",
+    "seconds": 14.166639804840088
+  },
+  {
+    "id": "Q-07",
+    "group": "Quality",
+    "title": "Event-time plausibility of the clean data",
+    "objective": "Check the time bounds the ingest jobs promise.",
+    "steps": [
+      "Compute event_ts - arrival_ts (CRAN) and fetched_ts - event_ts (GitHub) over all clean rows."
+    ],
+    "expected": "CRAN: -7 d to +5 min; GitHub: 0 to about 7 d.",
+    "status": "PASS",
+    "actual": "All clean records satisfy the event-time bounds enforced by the ingest jobs.",
+    "seconds": 4.346137285232544
+  }
+]

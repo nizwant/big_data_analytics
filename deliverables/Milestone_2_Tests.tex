@@ -1,0 +1,197 @@
+% Milestone 2 test documentation -- CRAN Polish Mirror Demand & GitHub Release Pulse Analysis System
+% Build: python tests/e2e/make_tex.py && latexmk -pdf -outdir=build Milestone_2_Tests.tex   (output renamed TeamName_Tests.pdf)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\emergencystretch=3em
+\renewcommand{\arraystretch}{1.15}
+\setcounter{tocdepth}{1}
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}
+\captionsetup[table]{position=top,skip=4pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Big Data Analysis Classes | 2026Z}
+\rhead{Milestone 2 -- Test Documentation}
+\cfoot{\thepage}
+
+\newcommand{\teamname}{TeamName}
+
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single,columns=fullflexible,
+  keepspaces=true,showstringspaces=false,inputencoding=utf8,extendedchars=true,
+  literate={→}{{->}}1 {…}{{...}}1 {≥}{{>=}}1 {≤}{{<=}}1}
+
+\title{\textbf{Project: CRAN Polish Mirror Demand \& GitHub Release Pulse Analysis System}\\[4pt]
+\large Milestone 2 -- Test Documentation}
+\author{Jakub Grzywaczewski, Mateusz Nizwantowski, Aleks Kapich, \L{}ukasz Grabarski}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Scope and approach}
+% =====================================================================
+
+This document covers the testing required for Milestone 2:
+
+\begin{itemize}
+  \item \textbf{Functional tests} of the \emph{data acquisition} modules (CRAN log source, GitHub Events poller, watch-list) and of the
+        \emph{pre-processing} modules (the three Flink jobs that validate, deduplicate and transform the data);
+  \item \textbf{Quality tests} of the \emph{data transformation} processes (conformance to schemas, completeness, uniqueness, partitioning, time bounds);
+  \item \textbf{Tabular test case documentation} with test objective, test steps, expected result and actual result.
+\end{itemize}
+
+The tests are executable. A harness (\texttt{tests/e2e/run\_e2e.py} in the repository) runs against the real stack -- Kafka, Schema Registry,
+HDFS and Flink -- and writes one log per test case. The \emph{actual result} columns and the printouts in the appendix are generated from that
+run, and the log is the evidence, so screenshots are not needed. Analytical components that are still work in progress (Cassandra tables, Spark,
+MLflow, Streamlit) are not tested here.
+
+\subsection{What is tested, and how the data is chosen}
+
+\begin{itemize}
+  \item \textbf{Live data flows through the stack during the tests.} The log generator produces about 4 requests per second and the GitHub poller
+        polls the real GitHub Events API with the project's token. Tests that check behaviour on this data (counts, schema, partitioning, API limits)
+        therefore run on real events.
+  \item \textbf{Injected test records.} For cases where the expected outcome must be known exactly (rejection reasons, deduplication, field mapping),
+        the harness produces clearly marked records next to the live data: IP addresses from the documentation range \texttt{203.0.113.0/24},
+        package names \texttt{e2etest.<tag>}, GitHub event ids \texttt{e2e-<tag>-*}. A random tag per run keeps runs apart.
+  \item \textbf{Fresh stack.} Before the run the dev environment was wiped (\texttt{deploy/dev\_clean.sh}) and started from scratch
+        (\texttt{deploy/up.sh}, \texttt{deploy/start\_logs.sh}, \texttt{deploy/start\_github.sh}), so the results do not depend on earlier data.
+\end{itemize}
+
+\textbf{Note on re-runs.} The full run (21 cases) was followed by a re-run of FP-02 and FP-05 with a new tag, because the first attempt failed on a defect
+in the test harness (a DataFrame was used as a boolean), not in the pipeline; FA-03 and FA-04 were re-run to clean up the formatting of their summary line.
+The logs and tables show the latest run of each case.
+
+\subsection{Test environment}
+
+\begin{table}[H]
+\centering
+\caption{Environment under test.}
+\small
+\begin{tabularx}{\textwidth}{@{}L{4.2cm}Y@{}}
+\toprule
+\textbf{Item} & \textbf{Value} \\
+\midrule
+Environment & dev, Docker Compose project \texttt{bigdata}, one host (8 CPU cores, 16\,GB RAM), Docker 29.7.2 / Compose 5.5.0 \\
+Data platform & Kafka 4.3.2 (KRaft), Confluent Schema Registry 8.4.1, HDFS 3.4.2 (1 DataNode), Flink 1.20.3 (PyFlink), Cassandra 5.0.9, Airflow 3.4.0 \\
+Data sources & Log generator (about 4 events/s, same format and topic as the future Filebeat input); GitHub Events API through the poller (watch-list: tier-1 organisations plus 100 other owners) \\
+Test harness & Python 3.12, pytest, confluent-kafka, fastavro, pandas, pyarrow; HDFS read through \texttt{docker compose exec namenode hdfs dfs} \\
+Test date & 23 November 2026 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{How to reproduce}
+
+\begin{lstlisting}
+deploy/dev_clean.sh -y && deploy/up.sh            # fresh dev stack
+deploy/start_logs.sh && deploy/start_github.sh    # data sources (GITHUB_TOKEN in the environment)
+pip install -r tests/e2e/requirements.txt
+python tests/e2e/run_e2e.py                       # about 15 minutes; logs in deliverables/test_logs/
+python tests/e2e/make_tex.py                      # regenerates the tables of this document
+\end{lstlisting}
+
+The run takes time because the Flink Parquet sinks finalise files on a 60\,s checkpoint, the poller needs several rounds after its restart, and
+the completeness test waits until all consumers have caught up.
+
+\subsection{Summary of results}
+
+\begin{table}[H]
+\centering
+\caption{Results by group.}
+\input{test_generated/summary.tex}
+\end{table}
+
+\subsection{Traceability}
+
+\begin{table}[H]
+\centering
+\caption{Modules under test and the cases that cover them.}
+\small
+\begin{tabularx}{\textwidth}{@{}L{4.6cm}L{2.6cm}Y@{}}
+\toprule
+\textbf{Module} & \textbf{Cases} & \textbf{What is checked} \\
+\midrule
+CRAN log source (generator; Filebeat later) & FA-01 & Delivery of well-formed common-log lines to Kafka \\
+Platform initialisation (\texttt{deploy/init.sh}) & FA-02 & Topics, Avro subjects, HDFS directories \\
+GitHub poller (code) & FA-03, FA-04 & Unit tests with mocked HTTP; live tests against the real API \\
+Watch-list build & FA-05 & Watch-list from crantogit, publication to \texttt{github\_repo\_list} \\
+GitHub poller (runtime) & FA-06, FA-07, FA-08 & Message format, ETag and quota handling, restart safety \\
+Flink job \texttt{cran\_logs\_ingest} & FP-01, FP-02, FP-06 & Parsing, validation and rejection, raw storage \\
+Flink job \texttt{cran\_package\_downloads} & FP-03 & Extraction of package downloads \\
+Flink job \texttt{github\_events\_ingest} & FP-04, FP-05, FP-06 & Mapping, deduplication, validation, raw storage \\
+All transformations & Q-01 to Q-07 & Schemas, uniqueness, completeness, partitioning, keys, rejections, time bounds \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% =====================================================================
+% \newgeometry cannot change the paper size, so the text block is given explicitly and the PDF page size is set directly.
+\newgeometry{left=2cm,top=2cm,textwidth=25.7cm,textheight=16.2cm,headheight=14pt,headsep=0.5cm,footskip=0.9cm}
+\pdfpagewidth=29.7cm \pdfpageheight=21cm
+\section{Functional tests: data acquisition}
+% =====================================================================
+Test case IDs \texttt{FA-nn}. Status and actual results come from the run of 23 November 2026; the full printout of each case is in the appendix.
+
+\input{test_generated/acquisition.tex}
+
+% =====================================================================
+\section{Functional tests: pre-processing}
+% =====================================================================
+Test case IDs \texttt{FP-nn}. Records marked \texttt{e2etest.<tag>} / \texttt{203.0.113.x} are injected by the harness (see the scope section).
+
+\input{test_generated/preprocessing.tex}
+
+% =====================================================================
+\section{Quality tests: data transformation}
+% =====================================================================
+Test case IDs \texttt{Q-nn}. These cases run after the producers were stopped and the Flink consumers had caught up, so that counts are stable.
+
+\input{test_generated/quality.tex}
+\clearpage
+\restoregeometry
+\pdfpagewidth=21cm \pdfpageheight=29.7cm
+
+% =====================================================================
+\section{Example data}
+% =====================================================================
+
+The following printout shows the transformed data as read from the Parquet files in HDFS into pandas DataFrames: shape, column types and the
+first rows of each dataset, plus a few aggregates. It is output of the same run as the test cases.
+
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true]{test_logs/DATA-EXAMPLES.log}
+
+% =====================================================================
+\appendix
+\section{Test logs}
+% =====================================================================
+
+Complete printout of every test case: objective, steps, expected result, observed output and result.
+
+\input{test_generated/logs.tex}
+
+\end{document}

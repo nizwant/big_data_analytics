@@ -1,0 +1,29 @@
+{\footnotesize
+\begin{longtable}{@{}L{1.1cm}L{5.8cm}L{5.4cm}L{3.9cm}L{5.5cm}L{1.3cm}@{}}
+\toprule
+\textbf{ID} & \textbf{Test objective} & \textbf{Test steps} & \textbf{Expected result} & \textbf{Actual result} & \textbf{Status} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{ID} & \textbf{Test objective} & \textbf{Test steps} & \textbf{Expected result} & \textbf{Actual result} & \textbf{Status} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\textbf{FA-01} & \textbf{Log source (log generator; Filebeat later) delivers log lines to Kafka}\newline Check that the current CRAN log source, the log generator that simulates the mirror until Filebeat is deployed, delivers well-formed access-log lines to the raw topic. It tests the interface (topic, line format) that Filebeat must also meet, not Filebeat itself. & 1.~Read the end offsets of cran\_\allowbreak{}mirror\_\allowbreak{}logs, wait 10 s, read them again.\newline 2.~Read a sample of messages and match each against the Apache common log format. & At least 20 new messages in 10 s; every sampled message is a valid common-log line. & 39 messages in 10 s; 200/\allowbreak{}200 sampled lines are valid common-log lines.\newline \textit{Log: Appendix, FA-01.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FA-02} & \textbf{Platform initialisation: topics, schemas, HDFS directories}\newline Check that deploy/\allowbreak{}init.sh created everything the acquisition modules write to. & 1.~Describe the Kafka topics.\newline 2.~List the Schema Registry subjects.\newline 3.~List the HDFS raw and clean directories. & Six topics with 3 partitions, three Avro subjects and eight HDFS directories exist. & 6 topics (3 partitions), 3 Avro subjects and 8 HDFS data directories exist.\newline \textit{Log: Appendix, FA-02.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FA-03} & \textbf{GitHub poller unit tests (mocked HTTP)}\newline Check the poller logic offline: ETags, rate limits, scheduling, retries, watch-list, Kafka sink, state. & 1.~Run pytest -m 'not live' in poller/\allowbreak{}. & All tests pass. & pytest -m 'not live': 107 passed, 5 deselected in 3.56s.\newline \textit{Log: Appendix, FA-03.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FA-04} & \textbf{GitHub poller live tests (real API)}\newline Check the poller against the real GitHub Events API with the project token. & 1.~Run pytest -m live in poller/\allowbreak{} with GITHUB\_\allowbreak{}TOKEN set. & All live tests pass. & pytest -m live (real GitHub API): 5 passed, 107 deselected in 7.74s.\newline \textit{Log: Appendix, FA-04.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FA-05} & \textbf{Watch-list build from crantogit and publication to Kafka}\newline Check that the watch-list is built from crantogit.csv and published to github\_\allowbreak{}repo\_\allowbreak{}list. & 1.~Read /\allowbreak{}data/\allowbreak{}watchlist.csv from the poller container as a DataFrame.\newline 2.~Validate columns, tiers and endpoints.\newline 3.~Read github\_\allowbreak{}repo\_\allowbreak{}list and compare the rows of the latest build. & Valid watch-list; the latest build published exactly the rows of the file. & 2627 watch-list rows (\{2: 1983, 1: 644\}), all published to github\_\allowbreak{}repo\_\allowbreak{}list.\newline \textit{Log: Appendix, FA-05.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FA-06} & \textbf{GitHub events reach Kafka with the documented format}\newline Check the structure, keys and package matching of the events written by the poller. & 1.~Read all messages of github\_\allowbreak{}repo\_\allowbreak{}updates.\newline 2.~Check the keys, mandatory fields, track values and package matching. & Key = repository name; every message has the documented fields; events are matched to CRAN packages. & 4814 events in Kafka, keys correct, 3811 matched to CRAN packages.\newline \textit{Log: Appendix, FA-06.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FA-07} & \textbf{API limit handling: conditional requests and quota}\newline Check from the poller's own request log that ETags are used and the quota is respected. & 1.~Read the request log of the poller (requests-*.jsonl) as a DataFrame.\newline 2.~Count polls by HTTP status.\newline 3.~Check rate-limit flags and the remaining quota. & Both 200 and 304 responses occur; no rate limit; remaining quota stays above the reserve. & 588 polls, statuses \{200: 554, 304: 34\}; no rate limit; minimum remaining quota 4303.\newline \textit{Log: Appendix, FA-07.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FA-08} & \textbf{Poller restart does not duplicate events}\newline Check that the poller keeps its state (ETags, written event ids) across a restart. & 1.~Record the event ids in github\_\allowbreak{}repo\_\allowbreak{}updates.\newline 2.~Restart the poller container and wait for several poll rounds.\newline 3.~Check in the poller's request log that it polled again and that polls after the restart got 304 (ETags kept).\newline 4.~Check that no event id occurs twice and earlier events are still present. & Polls after the restart; some answered 304; no duplicate event ids. & 214 polls after the restart (\{200: 205, 304: 9\}); 8031 distinct events, 0 duplicates.\newline \textit{Log: Appendix, FA-08.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\end{longtable}}
