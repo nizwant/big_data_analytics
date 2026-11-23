@@ -15,10 +15,11 @@ DIRS=(
   /data/clean/cran_mirror_logs
   /data/clean/cran_mirror_package_downloads
   /data/clean/github_repo_updates
+  /airflow/logs
 )
 
 echo "Waiting for HDFS to leave safe mode..."
 docker compose "$@" exec -T namenode hdfs dfsadmin -safemode wait
 
 docker compose "$@" exec -T namenode hdfs dfs -mkdir -p "${DIRS[@]}"
-docker compose "$@" exec -T namenode hdfs dfs -ls -R /data
+docker compose "$@" exec -T namenode hdfs dfs -ls -R /data /airflow
