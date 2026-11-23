@@ -5,7 +5,7 @@ and/or to daily JSONL files.
 
 | Track | Source | Purpose |
 |---|---|---|
-| `global` | `GET /events`, pages 1–3, at most every 60 s | Stream volume (> 1 event / 30 s) |
+| `global` | `GET /events`, pages 1–3, at most every 60 s; off by default (`GLOBAL_TRACK_ENABLED=true` to enable) | Stream volume (> 1 event / 30 s) |
 | `watchlist` | timelines in `watchlist.csv`, built from `crantogit.csv` | Repositories behind CRAN packages |
 
 ## Run
@@ -41,6 +41,8 @@ Environment variables or `.env` (all settings: `.env.example`).
 | `TIER2_INTERVAL_S` | automatic | Tier-2 poll interval (≥ 900); automatic: tier-2 timelines / `TIER2_BUDGET_PER_H`, in whole hours |
 | `TIER2_BUDGET_PER_H` | `3500` | Cap on paid tier-2 page requests per hour (304s are free) |
 | `CRANTOGIT_URL` | r-universe `crantogit.csv` on GitHub | Source of the package → repo mapping for the watch-list build (URL or file path) |
+| `GLOBAL_TRACK_ENABLED` | `false` | Also poll the global feed `GET /events` (`track: global`) |
+| `WATCHLIST_MAX_OWNERS` | `0` (all) | Watch-list build: keep the tier-1 organisations plus this many other owners (those with the most repos); in Compose: `POLLER_WATCHLIST_MAX_OWNERS` (default 100, 0 in `stage.env`/`prod.env`) |
 | `ORG_MIN_R_SHARE` | `0.5` | Poll an organisation's timeline only if this share of its public repos are R packages |
 | `KAFKA_BOOTSTRAP_SERVERS` | empty | Kafka brokers; empty: no Kafka output (in Compose: `kafka:19092`) |
 | `KAFKA_TOPIC` | `github_repo_updates` | Topic for the events (created by `deploy/kafka_init.sh`) |
@@ -89,7 +91,7 @@ DATA_DIR/
   to `github_repo_updates_clean` (Avro, `schemas/github_repo_updates_clean.avsc`) and to HDFS.
 - `event.created_at` is GitHub's own time of the event (use it as event time); `fetched_at` is when the poller
   received it.
-- `PublicEvent.created_at` is the repository's creation date; leave it out of delay measurements.
+- `PublicEvent` is GitHub's "repository made public" event, not a general label for public events. Its `created_at` is the repository's creation date, so leave it out of delay measurements; the Flink job rejects it as stale when that date is older than `MAX_AGE_DAYS`.
 
 ## Reliability
 

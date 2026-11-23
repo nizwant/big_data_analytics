@@ -5,7 +5,7 @@ Writes:
 2. valid records, repeated event ids dropped, to the Kafka topic github_repo_updates_clean
    (Avro, schemas/github_repo_updates_clean.avsc, key repo_name) and as Parquet to
    /data/clean/github_repo_updates (by event time);
-3. rejected records, with reject_reason, to /data/raw/github_repo_updates_bad (Parquet);
+3. rejected records (unparseable, invalid, or older than MAX_AGE_DAYS), with reject_reason, to /data/raw/github_repo_updates_bad (Parquet);
 4. watch-list rows to /data/raw/github_repo_list (text).
 
 The Kafka sink is at least once, so a job restart can repeat records sent since the
@@ -27,6 +27,10 @@ SCHEMA_REGISTRY_URL = os.environ.get("SCHEMA_REGISTRY_URL", "http://schema-regis
 SCHEMA_PATH = os.environ.get("CLEAN_SCHEMA_PATH", "/opt/schemas/github_repo_updates_clean.avsc")
 # Parquet files are finalized on checkpoint, so this is also the file roll interval.
 CHECKPOINT_INTERVAL_S = int(os.environ.get("CHECKPOINT_INTERVAL_S", "60"))
+# Events whose created_at is more than this many days before their Kafka arrival are rejected
+# as stale. The poller's first poll of a timeline returns up to 90 days of history; without this
+# limit the Parquet sink keeps one writer open per event hour of that history and runs out of memory.
+MAX_AGE_DAYS = int(os.environ.get("MAX_AGE_DAYS", "7"))
 # How long seen event ids are kept for deduplication.
 DEDUP_TTL_H = int(os.environ.get("DEDUP_TTL_H", "48"))
 
@@ -112,6 +116,7 @@ def validated_view() -> str:
                 WHEN NOT (line IS JSON OBJECT) OR event_id IS NULL THEN 'unparseable'
                 WHEN event_ts IS NULL OR fetched_ts IS NULL THEN 'invalid_timestamp'
                 WHEN track NOT IN ('global', 'watchlist') THEN 'invalid_track'
+                WHEN event_ts < TIMESTAMPADD(DAY, -{MAX_AGE_DAYS}, arrival_ts) THEN 'stale_timestamp'
                 WHEN {missing} THEN 'missing_field'
                 ELSE CAST(NULL AS STRING)
             END AS reject_reason

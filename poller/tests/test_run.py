@@ -96,7 +96,8 @@ def test_401_ends_the_process_with_a_clear_message(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # no .env here: the test must not read a real token
     monkeypatch.setenv("GITHUB_TOKEN", "expired")
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
-    for name in ("WATCHLIST_PATH", "GITHUB_API_URL", "GLOBAL_TRACK_ENABLED"):
+    monkeypatch.setenv("GLOBAL_TRACK_ENABLED", "true")
+    for name in ("WATCHLIST_PATH", "GITHUB_API_URL"):
         monkeypatch.delenv(name, raising=False)
     respx.get(f"{API}/events").mock(return_value=httpx.Response(401, json={"message": "Bad credentials"}))
     with pytest.raises(SystemExit, match="401 Unauthorized: GITHUB_TOKEN is invalid or expired"):

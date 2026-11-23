@@ -308,3 +308,13 @@ def test_build_without_kafka_only_writes_the_file(tmp_path):
     respx.get(url__regex=USERS).mock(side_effect=users_handler())
     lines = asyncio.run(build(build_cfg(tmp_path)))
     assert not any("published" in line for line in lines)
+
+
+def test_limit_owners_keeps_tier1_and_the_biggest_other_owners():
+    from gh_poller.watchlist import Package, limit_owners
+
+    pk = [Package("a", "tidyverse", "a"), Package("b", "big", "b1"), Package("c", "big", "b2"),
+          Package("d", "small", "d"), Package("e", "tiny", "e")]
+    kept = {p.owner for p in limit_owners(pk, 1)}
+    assert kept == {"tidyverse", "big"}
+    assert limit_owners(pk, 0) == pk
