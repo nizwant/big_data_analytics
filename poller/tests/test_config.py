@@ -9,7 +9,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     for name in (
         "TIER2_INTERVAL_S", "TIER2_BUDGET_PER_H", "TIER1_INTERVAL_S", "WATCHLIST_PATH", "DATA_DIR",
-        "KAFKA_BOOTSTRAP_SERVERS", "KAFKA_TOPIC", "EVENTS_JSONL",
+        "KAFKA_BOOTSTRAP_SERVERS", "KAFKA_TOPIC", "EVENTS_JSONL", "WATCHLIST_SOURCE",
     ):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
@@ -45,3 +45,24 @@ def test_no_output_stops_the_start(env):
     env.setenv("EVENTS_JSONL", "false")
     with pytest.raises(SystemExit, match="no output"):
         load_config()
+
+
+def test_watch_list_comes_from_kafka_when_kafka_is_set(env):
+    assert load_config().watchlist_source == "file"
+    env.setenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092")
+    assert load_config().watchlist_source == "kafka"
+    env.setenv("WATCHLIST_SOURCE", "file")  # e.g. a hand-made list while Kafka takes the events
+    assert load_config().watchlist_source == "file"
+
+
+@pytest.mark.parametrize("kafka, source, message", [("", "kafka", "needs KAFKA_BOOTSTRAP_SERVERS"), ("kafka:19092", "hdfs", "kafka or file")])
+def test_invalid_watch_list_source_stops_the_start(env, kafka, source, message):
+    env.setenv("KAFKA_BOOTSTRAP_SERVERS", kafka)
+    env.setenv("WATCHLIST_SOURCE", source)
+    with pytest.raises(SystemExit, match=message):
+        load_config()
+
+
+def test_settings_can_come_from_a_mapping_instead_of_the_environment(env):
+    cfg = load_config(env_file=None, environ={"GITHUB_TOKEN": "from-airflow", "DATA_DIR": "/tmp/build"})
+    assert cfg.github_token == "from-airflow" and str(cfg.watchlist_path) == "/tmp/build/watchlist.csv"

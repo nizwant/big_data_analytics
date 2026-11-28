@@ -19,8 +19,9 @@ from .github import PollResult, Unauthorized, build_headers, poll
 from .limits import Budget, Clock, Pause, RequestGate, TokenBucket
 from .scheduler import ERROR_BACKOFF_S, Scheduler
 from .sink import DailyJsonl, EventSinks, KafkaSink, SinkError, make_record
+from .snapshots import WatchlistFeed
 from .state import State
-from .watchlist import Watchlist, WatchlistError, load_watchlist
+from .watchlist import Watchlist, WatchlistError, load_watchlist, watchlist_from_rows
 
 log = logging.getLogger("gh_poller")
 
@@ -29,7 +30,9 @@ GLOBAL_ENDPOINT = "/events"
 # minutes, but org/repo timelines return events up to 30 days old, so their ids must live longer.
 KEEP_S = {"global": 2 * 86400, "watchlist": 31 * 86400}
 PRUNE_EVERY_S = 3600
-WATCHLIST_CHECK_S = 60  # how often the watch-list file's modification time is checked
+WATCHLIST_CHECK_S = 60  # how often the watch-list (file or Kafka topic) is checked for a new version
+# At start, how long to wait for the Kafka topic to be read to its end before polling begins.
+SYNC_WAIT_S = 30
 # After a failed delivery (Kafka down, disk full) all polling pauses this long. The events stay
 # uncommitted, so the next poll of that timeline fetches them again.
 SINK_RETRY_S = 60
@@ -239,13 +242,18 @@ def reload_watchlist(ctx: Context, scheduler: Scheduler, last: tuple[int, int] |
     except OSError as exc:
         log.warning("watch-list %s could not be read, will retry: %s", path, exc)
         return last
+    apply_watchlist(ctx, scheduler, wl, str(path))
+    return sig
+
+
+def apply_watchlist(ctx: Context, scheduler: Scheduler, wl: Watchlist, origin: str) -> None:
     ctx.watchlist = wl
     added, removed, retiered = scheduler.update(wl.tiers, wl.order(), ctx.state.endpoint_history())
     tiers = list(wl.tiers.values())
     n2, every_h = tiers.count(2), scheduler.tier_interval(2) / 3600
     log.info(
         "watch-list %s: %d timelines (tier 1: %d, tier 2: %d every %g h%s); added %d, removed %d, re-tiered %d%s",
-        path,
+        origin,
         len(tiers),
         tiers.count(1),
         n2,
@@ -262,13 +270,83 @@ def reload_watchlist(ctx: Context, scheduler: Scheduler, last: tuple[int, int] |
             n2 / every_h,
             ctx.cfg.tier2_budget_per_h,
         )
-    return sig
 
 
-async def watchlist_loop(ctx: Context, scheduler: Scheduler, last: tuple[int, int] | None) -> None:
+class FileWatchlist:
+    """watchlist.csv, applied again whenever its modification time or size changes."""
+
+    synced = True
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._last: tuple[int, int] | None = None
+
+    def describe(self) -> str:
+        return str(self.path)
+
+    def check(self, ctx: Context, scheduler: Scheduler) -> None:
+        self._last = reload_watchlist(ctx, scheduler, self._last)
+
+    def close(self) -> None:
+        pass
+
+
+class KafkaWatchlist:
+    """The newest complete snapshot in github_repo_list, published by the Airflow DAG github_watchlist."""
+
+    def __init__(self, feed: WatchlistFeed):
+        self.feed = feed
+        self.applied: str | None = None  # built_at of the snapshot in use
+
+    @property
+    def synced(self) -> bool:
+        return self.feed.synced
+
+    def describe(self) -> str:
+        return f"Kafka topic {self.feed.topic}"
+
+    def check(self, ctx: Context, scheduler: Scheduler) -> None:
+        snapshot = self.feed.read()
+        if snapshot is None or snapshot.built_at == self.applied:
+            return
+        self.applied = snapshot.built_at
+        origin = f"{self.feed.topic} built at {snapshot.built_at}"
+        try:
+            wl = watchlist_from_rows(snapshot.rows, origin)
+        except WatchlistError as exc:
+            log.error("watch-list not loaded, keeping the current one: %s", exc)
+            return
+        apply_watchlist(ctx, scheduler, wl, origin)
+
+    def close(self) -> None:
+        self.feed.close()
+
+
+WatchlistSource = FileWatchlist | KafkaWatchlist
+
+
+def open_watchlist_source(cfg: Config) -> WatchlistSource:
+    if cfg.watchlist_source == "kafka":
+        return KafkaWatchlist(WatchlistFeed(cfg.kafka_bootstrap_servers or "", cfg.watchlist_topic))
+    return FileWatchlist(cfg.watchlist_path)
+
+
+async def first_check(ctx: Context, scheduler: Scheduler, source: WatchlistSource) -> None:
+    """Load the watch-list before polling starts. Waits up to SYNC_WAIT_S for the Kafka topic to be
+    read to its end, so an older snapshot is not applied just before the newest one."""
+    deadline = ctx.clock.now() + SYNC_WAIT_S
+    source.check(ctx, scheduler)
+    while not source.synced and ctx.clock.now() < deadline:
+        await ctx.clock.sleep(1)
+        source.check(ctx, scheduler)
+
+
+async def watchlist_loop(ctx: Context, scheduler: Scheduler, source: WatchlistSource) -> None:
     while True:
         await ctx.clock.sleep(WATCHLIST_CHECK_S)
-        last = reload_watchlist(ctx, scheduler, last)
+        source.check(ctx, scheduler)
+        if not scheduler.endpoints:
+            log.info("still waiting for a watch-list in %s", source.describe())
 
 
 async def run_until_first_error(coros: list) -> None:
@@ -285,10 +363,11 @@ async def run_until_first_error(coros: list) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def run(cfg: Config, clock: Clock | None = None) -> None:
+async def run(cfg: Config, clock: Clock | None = None, watchlist_source: WatchlistSource | None = None) -> None:
     clock = clock or Clock()
     state = State(cfg.db_path)
     events_out = open_outputs(cfg)
+    source = watchlist_source or open_watchlist_source(cfg)
     try:
         async with httpx.AsyncClient(
             headers=build_headers(cfg.github_token, cfg.user_agent),
@@ -314,22 +393,28 @@ async def run(cfg: Config, clock: Clock | None = None) -> None:
                 pause=pause,
                 budget=ctx.budget,
             )
-            last = reload_watchlist(ctx, scheduler, None)
+            await first_check(ctx, scheduler, source)
             if not scheduler.endpoints:
-                if not cfg.global_track_enabled:
-                    raise SystemExit(f"Nothing to poll: the global track is disabled and {cfg.watchlist_path} is missing or empty.")
-                log.warning("no watch-list at %s yet; polling the global track until it appears", cfg.watchlist_path)
-            tasks = [prune_loop(state, clock), watchlist_loop(ctx, scheduler, last), scheduler.run()]
+                # No exit: the first run of the DAG github_watchlist may still be on its way.
+                log.warning(
+                    "no watch-list in %s yet; checking every %d s%s",
+                    source.describe(),
+                    WATCHLIST_CHECK_S,
+                    ", polling the global track meanwhile" if cfg.global_track_enabled else "",
+                )
+            tasks = [prune_loop(state, clock), watchlist_loop(ctx, scheduler, source), scheduler.run()]
             if cfg.global_track_enabled:
                 tasks.append(endpoint_loop(ctx, GLOBAL_ENDPOINT, "global", cfg.global_max_pages, cfg.global_min_interval_s))
             log.info(
-                "global track %s; events to %s; state and logs in %s",
+                "global track %s; watch-list from %s; events to %s; state and logs in %s",
                 "on" if cfg.global_track_enabled else "off",
+                source.describe(),
                 describe_outputs(cfg),
                 cfg.data_dir.resolve(),
             )
             await run_until_first_error(tasks)
     finally:
+        source.close()
         events_out.close()
         state.close()
 

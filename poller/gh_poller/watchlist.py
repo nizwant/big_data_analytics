@@ -1,4 +1,7 @@
-"""Watch-list: build watchlist.csv from crantogit.csv (python -m gh_poller.watchlist) and load it.
+"""Watch-list: build watchlist.csv from crantogit.csv and load it.
+
+The build runs daily in the Airflow DAG github_watchlist (src/airflow/dags), which publishes every
+row to the Kafka topic github_repo_list; `python -m gh_poller.watchlist` runs the same build by hand.
 
 Endpoint per package:
 - owner in TIER1_ORGS -> /orgs/{owner}/events, tier 1
@@ -9,6 +12,7 @@ Not /users/{name}/events/public: it lists what the user did anywhere, not events
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import csv
 import io
@@ -19,6 +23,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 from urllib.parse import urlsplit
 
 import httpx
@@ -26,6 +31,7 @@ import httpx
 from .config import Config, load_config
 from .github import Unauthorized, _get, _int, build_headers, is_rate_limited, raise_if_unauthorized
 from .sink import KafkaSink, SinkError
+from .snapshots import Snapshot, SnapshotReadError, read_latest_snapshot
 
 COLUMNS = ["package", "owner", "repo", "endpoint", "tier"]
 CRAN_MIRROR_ORG = "cran"  # github.com/cran: read-only mirror with one repo per CRAN package
@@ -35,6 +41,9 @@ TIER1_ORGS = (
     "mlr-org", "r-spatial", "easystats", "r-dbi", "rdatatable",
 )
 QUOTA_RESERVE = 1000  # stop looking up accounts when X-RateLimit-Remaining falls below this
+# A build with more than this share fewer rows than the newest published snapshot is not
+# published (a truncated crantogit.csv would make the poller drop thousands of timelines).
+MAX_SHRINK = 0.10
 
 
 # --- Build ----------------------------------------------------------------------------------
@@ -64,6 +73,10 @@ class Account:
 
 class LookupStopped(Exception):
     """Account lookups stopped early; running the build again continues where it stopped."""
+
+
+class WatchlistShrank(Exception):
+    """The new watch-list is much smaller than the published one; nothing was written or published."""
 
 
 def parse_crantogit(text: str) -> list[Package]:
@@ -229,9 +242,18 @@ def account_cache_path(cfg: Config) -> Path:
 
 
 def watchlist_records(rows: list[Row], built_at: str) -> list[dict]:
-    """One message per watch-list row; `built_at` tells the snapshots of successive builds apart."""
+    """One message per watch-list row. `built_at` tells the snapshots of successive builds apart, and
+    `rows_in_snapshot` lets a reader tell a complete snapshot from one whose publishing failed."""
     return [
-        {"built_at": built_at, "package": r.package, "owner": r.owner, "repo": r.repo, "endpoint": r.endpoint, "tier": r.tier}
+        {
+            "built_at": built_at,
+            "rows_in_snapshot": len(rows),
+            "package": r.package,
+            "owner": r.owner,
+            "repo": r.repo,
+            "endpoint": r.endpoint,
+            "tier": r.tier,
+        }
         for r in rows
     ]
 
@@ -250,8 +272,29 @@ def publish_watchlist(rows: list[Row], cfg: Config, producer=None) -> int:
         sink.close()
 
 
-async def build(cfg: Config, producer=None) -> list[str]:
-    """crantogit.csv -> watchlist.csv (and github_repo_list if Kafka is set); returns summary lines."""
+def check_size(rows: int, previous: Snapshot | None, *, force: bool = False) -> str | None:
+    """Raise WatchlistShrank if `rows` is more than MAX_SHRINK below `previous`, unless forced."""
+    if previous is None:
+        return None
+    before = len(previous.rows)
+    line = f"rows {rows} ({rows - before:+d} against the snapshot built at {previous.built_at})"
+    if rows < before * (1 - MAX_SHRINK):
+        if not force:
+            raise WatchlistShrank(
+                f"{rows} rows, {1 - rows / before:.0%} fewer than the {before} of the snapshot built at "
+                f"{previous.built_at} (at most {MAX_SHRINK:.0%} allowed). Check crantogit.csv; to publish "
+                "anyway, trigger the DAG with force=true (or run the build with --force)."
+            )
+        line += ", published because forced"
+    return line
+
+
+async def build(cfg: Config, producer=None, *, previous: Snapshot | None = None, force: bool = False) -> list[str]:
+    """crantogit.csv -> watchlist.csv (and github_repo_list if Kafka is set); returns summary lines.
+
+    `previous` is the newest published snapshot: a list with more than MAX_SHRINK fewer rows is
+    neither written nor published, unless `force`.
+    """
     packages = limit_owners(parse_crantogit(await read_source(cfg.crantogit_url)), cfg.watchlist_max_owners)
     cache = AccountCache(account_cache_path(cfg))
     owners = owners_to_look_up(packages)
@@ -264,8 +307,11 @@ async def build(cfg: Config, producer=None) -> list[str]:
             known = sum(o in cache.accounts for o in owners)
             raise LookupStopped(f"{exc}. Account types known for {known} of {len(owners)} owners; run again to continue.") from exc
     rows = plan_endpoints(packages, cache.accounts, org_min_r_share=cfg.org_min_r_share)
+    size_line = check_size(len(rows), previous, force=force)
     write_watchlist(rows, cfg.watchlist_path)
     lines = summarize(packages, cache.accounts, owners, looked_up, rows, cfg)
+    if size_line:
+        lines.append(size_line)
     if cfg.kafka_bootstrap_servers or producer is not None:
         lines.append(f"published {publish_watchlist(rows, cfg, producer)} rows to {cfg.watchlist_topic}")
     return lines
@@ -298,13 +344,19 @@ def summarize(packages, accounts, owners, looked_up, rows, cfg) -> list[str]:
     return lines
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m gh_poller.watchlist", description="Build the watch-list.")
+    parser.add_argument("--force", action="store_true", help=f"publish even with more than {MAX_SHRINK:.0%} fewer rows")
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = load_config()
     try:
-        lines = asyncio.run(build(cfg))
-    except LookupStopped as exc:
+        previous = None
+        if cfg.kafka_bootstrap_servers:
+            previous = read_latest_snapshot(cfg.kafka_bootstrap_servers, cfg.watchlist_topic)
+        lines = asyncio.run(build(cfg, previous=previous, force=args.force))
+    except (LookupStopped, WatchlistShrank, SnapshotReadError) as exc:
         print(f"watch-list not written: {exc}", file=sys.stderr)
         return 1
     except SinkError as exc:
@@ -348,27 +400,32 @@ class Watchlist:
 
 
 def load_watchlist(path: str | Path) -> Watchlist:
-    wl = Watchlist()
     with open(path, encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
         if [f.strip() for f in reader.fieldnames or []] != COLUMNS:
             raise WatchlistError(f"{path}: expected the header {','.join(COLUMNS)}")
-        for row in reader:
-            value = {k: (row.get(k) or "").strip() for k in COLUMNS}
-            endpoint = value["endpoint"]
-            if value["tier"] not in ("1", "2") or not endpoint.startswith("/") or not endpoint.endswith("/events"):
-                wl.skipped_rows += 1
-                continue
-            tier = int(value["tier"])
-            wl.tiers[endpoint] = min(tier, wl.tiers.get(endpoint, tier))
-            if value["package"]:
-                wl.weight[endpoint] = wl.weight.get(endpoint, 0) + 1
-                if value["owner"] and value["repo"]:
-                    key = f"{value['owner']}/{value['repo']}".lower()
-                    if value["package"] not in wl.packages.setdefault(key, []):
-                        wl.packages[key].append(value["package"])
+        return watchlist_from_rows(reader, str(path))
+
+
+def watchlist_from_rows(rows: Iterable[dict], source: str) -> Watchlist:
+    """Rows with the columns of watchlist.csv (from the file or a github_repo_list snapshot)."""
+    wl = Watchlist()
+    for row in rows:
+        value = {k: str(row.get(k) if row.get(k) is not None else "").strip() for k in COLUMNS}
+        endpoint = value["endpoint"]
+        if value["tier"] not in ("1", "2") or not endpoint.startswith("/") or not endpoint.endswith("/events"):
+            wl.skipped_rows += 1
+            continue
+        tier = int(value["tier"])
+        wl.tiers[endpoint] = min(tier, wl.tiers.get(endpoint, tier))
+        if value["package"]:
+            wl.weight[endpoint] = wl.weight.get(endpoint, 0) + 1
+            if value["owner"] and value["repo"]:
+                key = f"{value['owner']}/{value['repo']}".lower()
+                if value["package"] not in wl.packages.setdefault(key, []):
+                    wl.packages[key].append(value["package"])
     if not wl.tiers:
-        raise WatchlistError(f"{path}: no valid rows")
+        raise WatchlistError(f"{source}: no valid rows")
     return wl
 
 

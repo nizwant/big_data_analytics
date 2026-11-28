@@ -123,24 +123,40 @@ def fa04(t: Case):
 
 
 def fa05(t: Case):
-    csv = compose_text(*POLLER_ARGS, "exec", "-T", "github-poller", "cat", "/data/watchlist.csv")
-    import io
-    wl = pd.read_csv(io.StringIO(csv))
+    runs = json.loads(compose_text("exec", "-T", "airflow", "airflow", "dags", "list-runs", "github_watchlist", "--output", "json")
+                      or "[]")
+    t.out("runs of github_watchlist: " + json.dumps([{k: r.get(k) for k in ("run_id", "state", "run_after")} for r in runs[:5]]))
+    t.check(bool(runs) and runs[0]["state"] == "success", "the newest run of the DAG github_watchlist succeeded")
+    landed = compose_text("exec", "-T", "namenode", "hdfs", "dfs", "-ls", "-R", "/data/raw/crantogit", check=False)
+    files = [l.split()[-1] for l in landed.splitlines() if l.endswith("/crantogit.csv")]
+    t.out("landed crantogit.csv files: " + ", ".join(files))
+    t.check(bool(files), "the DAG landed crantogit.csv in /data/raw/crantogit/dt=...")
+
+    # The newest complete build, derived independently of the poller's code: rows grouped by built_at,
+    # complete once rows_in_snapshot distinct rows have arrived.
+    cols = ["package", "owner", "repo", "endpoint", "tier"]
+    rows = [json.loads(m.value) for m in lib.consume_all("github_repo_list")]
+    builds: dict[str, dict] = {}
+    for r in rows:
+        if "rows_in_snapshot" in r:
+            b = builds.setdefault(r["built_at"], {"expected": r["rows_in_snapshot"], "rows": {}})
+            b["rows"][tuple(str(r[c]) for c in cols)] = r
+    complete = sorted(k for k, b in builds.items() if len(b["rows"]) == b["expected"])
+    t.out(f"github_repo_list: {len(rows)} messages, {len(builds)} builds, {len(complete)} complete")
+    t.check(bool(complete), "github_repo_list holds a complete watch-list build")
+    if not complete:
+        return
+    last = complete[-1]
+    wl = pd.DataFrame(list(builds[last]["rows"].values()))[cols]
+    t.out(f"newest complete build: {last}, {len(wl)} rows; example message: {json.dumps(next(iter(builds[last]['rows'].values())))}")
     t.df(wl, n=5)
     t.out(f"tier counts: {wl['tier'].value_counts().to_dict()}")
-    kinds = wl["endpoint"].str.extract(r"^(/[a-z]+)")[0].value_counts().to_dict()
-    t.out(f"endpoint kinds: {kinds}")
-    t.check(list(wl.columns) == ["package", "owner", "repo", "endpoint", "tier"], "watchlist.csv has the columns package, owner, repo, endpoint, tier")
     t.check(set(wl["tier"]) <= {1, 2}, "every row has tier 1 or 2")
-    t.check(wl["endpoint"].str.match(r"^/(orgs|repos)/").all(), "every endpoint is an /orgs/... or /repos/... timeline")
-    topic = lib.consume_all("github_repo_list")
-    rows = [json.loads(m.value) for m in topic]
-    last_build = max(r["built_at"] for r in rows)
-    latest = [r for r in rows if r["built_at"] == last_build]
-    t.out(f"github_repo_list: {len(rows)} messages, {len(latest)} from the latest build ({last_build})")
-    t.out(f"example message: {json.dumps(latest[0])}")
-    t.check(len(latest) == len(wl), f"the latest build published {len(latest)} rows = {len(wl)} rows of watchlist.csv")
-    t.actual = f"{len(wl)} watch-list rows ({wl['tier'].value_counts().to_dict()}), all published to github_repo_list."
+    t.check(wl["endpoint"].str.match(r"^/(orgs|repos)/[^/]+(/[^/]+)?/events$").all(), "every endpoint is an /orgs/... or /repos/... timeline")
+    poller_log = compose_text(*POLLER_ARGS, "logs", "github-poller")
+    t.check(f"built at {last}" in poller_log, f"the poller applied the build of {last}")
+    t.actual = (f"DAG run {runs[0]['state']}; newest complete build {last}: {len(wl)} rows "
+                f"({wl['tier'].value_counts().to_dict()}), applied by the poller.")
 
 
 def fa06(t: Case):
@@ -585,11 +601,15 @@ CASES = {
     "FA-04": Case("FA-04", "Acquisition", "GitHub poller live tests (real API)",
                   "Check the poller against the real GitHub Events API with the project token.",
                   ["Run pytest -m live in poller/ with GITHUB_TOKEN set."], "All live tests pass."),
-    "FA-05": Case("FA-05", "Acquisition", "Watch-list build from crantogit and publication to Kafka",
-                  "Check that the watch-list is built from crantogit.csv and published to github_repo_list.",
-                  ["Read /data/watchlist.csv from the poller container as a DataFrame.",
-                   "Validate columns, tiers and endpoints.", "Read github_repo_list and compare the rows of the latest build."],
-                  "Valid watch-list; the latest build published exactly the rows of the file."),
+    "FA-05": Case("FA-05", "Acquisition", "Watch-list build by the Airflow DAG and handoff to the poller via Kafka",
+                  "Check that the DAG github_watchlist landed crantogit.csv in HDFS and published a complete watch-list "
+                  "to github_repo_list, and that the poller applied it.",
+                  ["Read the runs of the DAG github_watchlist.", "List the landed crantogit.csv files in HDFS.",
+                   "Read github_repo_list, group the rows by built_at and take the newest build with all its "
+                   "rows_in_snapshot rows as a DataFrame.", "Validate tiers and endpoints.",
+                   "Search the poller's log for that build."],
+                  "The newest DAG run succeeded and the raw file exists; the newest complete build is a valid "
+                  "watch-list, and the poller applied it."),
     "FA-06": Case("FA-06", "Acquisition", "GitHub events reach Kafka with the documented format",
                   "Check the structure, keys and package matching of the events written by the poller.",
                   ["Read all messages of github_repo_updates.", "Check the keys, mandatory fields, track values and package matching."],

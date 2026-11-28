@@ -1,21 +1,25 @@
 import asyncio
 import csv
 import dataclasses
+import json
 
 import httpx
 import pytest
 import respx
 
+from gh_poller.snapshots import Snapshot, SnapshotCollector
 from gh_poller.watchlist import (
     Account,
     AccountCache,
     LookupStopped,
     Row,
     WatchlistError,
+    WatchlistShrank,
     build,
     load_watchlist,
     main,
     parse_crantogit,
+    watchlist_from_rows,
     write_watchlist,
 )
 
@@ -243,11 +247,11 @@ def test_401_ends_the_build_with_a_clear_message(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "expired")
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("CRANTOGIT_URL", str(source))
-    for name in ("WATCHLIST_PATH", "GITHUB_API_URL"):
+    for name in ("WATCHLIST_PATH", "GITHUB_API_URL", "KAFKA_BOOTSTRAP_SERVERS", "WATCHLIST_SOURCE"):
         monkeypatch.delenv(name, raising=False)
     respx.get(url__regex=USERS).mock(return_value=httpx.Response(401, json={"message": "Bad credentials"}))
     with pytest.raises(SystemExit, match="401 Unauthorized.*Watch-list not written"):
-        main()
+        main([])
     assert not (tmp_path / "data" / "watchlist.csv").exists()
 
 
@@ -279,6 +283,7 @@ def test_build_publishes_the_rows_to_the_watchlist_topic(tmp_path):
     by_key = {key.decode(): value for _, key, value in producer.sent}
     assert by_key["dplyr"] == {
         "built_at": by_key["dplyr"]["built_at"],
+        "rows_in_snapshot": len(rows),
         "package": "dplyr",
         "owner": "tidyverse",
         "repo": "dplyr",
@@ -318,3 +323,50 @@ def test_limit_owners_keeps_tier1_and_the_biggest_other_owners():
     kept = {p.owner for p in limit_owners(pk, 1)}
     assert kept == {"tidyverse", "big"}
     assert limit_owners(pk, 0) == pk
+
+
+def snapshot_of(n_rows: int, built_at: str = "2026-11-27T04:00:00Z") -> Snapshot:
+    return Snapshot(built_at, [{"package": f"p{i}", "owner": "o", "repo": f"p{i}", "endpoint": f"/repos/o/p{i}/events", "tier": 2}
+                               for i in range(n_rows)])
+
+
+@respx.mock
+def test_published_rows_read_back_as_the_same_watch_list(tmp_path):
+    from test_kafka_sink import FakeProducer
+
+    respx.get(url__regex=USERS).mock(side_effect=users_handler())
+    cfg = build_cfg(tmp_path)
+    producer = FakeProducer()
+    asyncio.run(build(cfg, producer=producer))
+
+    collector = SnapshotCollector()
+    for _, _, value in reversed(producer.sent):  # any order, as from several partitions
+        collector.add(json.dumps(value))
+    from_topic = watchlist_from_rows(collector.latest.rows, "topic")
+    from_file = load_watchlist(cfg.watchlist_path)
+    assert from_topic.tiers == from_file.tiers
+    assert {k: sorted(v) for k, v in from_topic.packages.items()} == {k: sorted(v) for k, v in from_file.packages.items()}
+
+
+@respx.mock
+def test_much_smaller_list_is_neither_written_nor_published(tmp_path):
+    from test_kafka_sink import FakeProducer
+
+    respx.get(url__regex=USERS).mock(side_effect=users_handler())
+    cfg = build_cfg(tmp_path)
+    producer = FakeProducer()
+    with pytest.raises(WatchlistShrank, match="24 rows, 20% fewer than the 30 of the snapshot built at 2026-11-27T04:00:00Z"):
+        asyncio.run(build(cfg, producer=producer, previous=snapshot_of(30)))
+    assert not cfg.watchlist_path.exists() and producer.sent == []
+
+    lines = asyncio.run(build(cfg, producer=producer, previous=snapshot_of(30), force=True))
+    assert len(producer.sent) == 24
+    assert "rows 24 (-6 against the snapshot built at 2026-11-27T04:00:00Z), published because forced" in lines
+
+
+@respx.mock
+def test_small_changes_and_growth_are_published(tmp_path):
+    respx.get(url__regex=USERS).mock(side_effect=users_handler())
+    cfg = build_cfg(tmp_path)
+    assert "rows 24 (-2 against the snapshot built at 2026-11-27T04:00:00Z)" in asyncio.run(build(cfg, previous=snapshot_of(26)))
+    assert "rows 24 (+14 against the snapshot built at 2026-11-27T04:00:00Z)" in asyncio.run(build(cfg, previous=snapshot_of(10)))
