@@ -1,0 +1,9 @@
+# Python packages of the Spark image, for the image's Python 3.10 and PySpark 3.5 (which
+# ships with Spark itself, under /opt/spark/python). NumPy stays on 1.x because PySpark
+# 3.5 predates NumPy 2.
+numpy==1.26.4
+pandas==2.2.3
+pyarrow==17.0.0
+# MLflow client only (tracking and model logging; no server or UI). Keep it at the
+# version of the MLflow server once that is deployed.
+mlflow-skinny==3.18.0

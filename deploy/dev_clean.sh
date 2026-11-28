@@ -8,7 +8,7 @@
 #
 # Usage: deploy/dev_clean.sh [-y] [--images]
 #   -y        skip the confirmation prompt
-#   --images  also remove the images built by compose (bigdata/pyflink, bigdata/airflow, log generator, GitHub poller)
+#   --images  also remove the images built by compose (bigdata/pyflink, bigdata/spark, bigdata/airflow, log generator, GitHub poller)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -31,7 +31,7 @@ if [ "$YES" -ne 1 ]; then
   [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 fi
 
-DOWN_ARGS=(--profile dev --profile github down --volumes --remove-orphans)
+DOWN_ARGS=(--profile dev --profile github --profile spark-jobs down --volumes --remove-orphans)
 [ "$IMAGES" -eq 1 ] && DOWN_ARGS+=(--rmi local)
 docker compose "${DOWN_ARGS[@]}"
 

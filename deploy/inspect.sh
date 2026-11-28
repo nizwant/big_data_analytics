@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prints an overview of the running stack: HDFS contents, Kafka topics and offsets,
-# the Flink consumer group lag and the Flink cluster, job and checkpoint state. Read-only.
+# the Flink consumer group lag, the Flink cluster, job and checkpoint state, and the Spark
+# cluster and its recent applications. Read-only.
 # Extra arguments are passed to `docker compose`, e.g.:
 #   deploy/inspect.sh --env-file deploy/prod.env
 set -uo pipefail
@@ -19,7 +20,7 @@ section "HDFS: datanodes"
 "${DC[@]}" exec -T namenode hdfs dfsadmin -report 2>/dev/null | grep -E "^Live datanodes|^Hostname|^DFS Used:|^Num of Blocks" || echo "(namenode not reachable)"
 
 section "HDFS: directories (finalized files per directory, in-progress hidden)"
-for root in /data /airflow/logs; do
+for root in /data /airflow/logs /spark; do
   if ! "${DC[@]}" exec -T namenode hdfs dfs -test -d "$root" 2>/dev/null; then
     echo "$root  (missing; run deploy/hdfs_init.sh)"
     continue
@@ -37,7 +38,7 @@ for root in /data /airflow/logs; do
 done
 
 section "HDFS: size per directory (data size, size with replication)"
-for dir in /data/raw /data/clean /airflow/logs; do
+for dir in /data/raw /data/clean /data/batch /airflow/logs /spark; do
   "${DC[@]}" exec -T namenode hdfs dfs -du -h "$dir" 2>/dev/null | sed 's/^/  /' | grep . || echo "$dir  (missing or empty)"
 done
 
@@ -97,6 +98,31 @@ for j in sorted(jobs, key=lambda j: j["name"]):
     except Exception:
         pass
 ' 2>/dev/null || echo "(jobmanager not reachable)"
+
+section "Spark: cluster"
+"${DC[@]}" exec -T spark-master python3 -c '
+import json, urllib.request
+m = json.load(urllib.request.urlopen("http://localhost:8080/json/", timeout=10))
+print("%s  workers alive=%d  cores used=%d/%d  memory used=%d/%d MB" % (
+    m["status"], m["aliveworkers"], m["coresused"], m["cores"], m["memoryused"], m["memory"]))
+for w in sorted(m["workers"], key=lambda w: w["host"]):
+    print("  %s  %s  cores %d/%d  memory %d/%d MB" % (
+        w["host"], w["state"], w["coresused"], w["cores"], w["memoryused"], w["memory"]))
+for a in m["activeapps"]:
+    print("running: %s  cores=%d  %s" % (a["name"], a["cores"], a["id"]))
+' 2>/dev/null || echo "(spark-master not reachable)"
+
+section "Spark: last applications (history server)"
+"${DC[@]}" exec -T spark-history python3 -c '
+import json, urllib.request
+apps = json.load(urllib.request.urlopen("http://localhost:18080/api/v1/applications?limit=5", timeout=10))
+if not apps:
+    print("(no applications yet)")
+for a in apps:
+    at = a["attempts"][-1]
+    state = "completed" if at["completed"] else "running"
+    print("%s  %s  start=%s  duration=%ds" % (a["name"], state, at["startTime"][:19], at["duration"] // 1000))
+' 2>/dev/null || echo "(spark-history not reachable)"
 
 section "Airflow: components"
 "${DC[@]}" exec -T airflow curl -s http://localhost:8080/api/v2/monitor/health 2>/dev/null \
