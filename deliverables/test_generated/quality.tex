@@ -1,0 +1,27 @@
+{\footnotesize
+\begin{longtable}{@{}L{1.1cm}L{5.8cm}L{5.4cm}L{3.9cm}L{5.5cm}L{1.3cm}@{}}
+\toprule
+\textbf{ID} & \textbf{Test objective} & \textbf{Test steps} & \textbf{Expected result} & \textbf{Actual result} & \textbf{Status} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{ID} & \textbf{Test objective} & \textbf{Test steps} & \textbf{Expected result} & \textbf{Actual result} & \textbf{Status} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\textbf{Q-01} & \textbf{Schema conformance and value constraints}\newline Check that the transformed data conform to the Avro schemas and the constraints Avro cannot express. & 1.~Decode every message of the three derived topics with the schema from the registry.\newline 2.~Compare the Parquet columns with the Avro fields.\newline 3.~Check status range, methods, allowed values. & Everything decodes; columns match; all constraints hold. & All three clean topics decode with the registry schema; Parquet columns match; value constraints hold.\newline \textit{Log: Appendix, Q-01.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{Q-02} & \textbf{No duplicate GitHub events in the clean data}\newline Check that deduplication on event\_\allowbreak{}id works on the live data. & 1.~Count distinct event ids in the clean topic and in the Parquet files.\newline 2.~Compare with the raw topic. & No event id occurs twice in the clean data. & 2905 clean events, 0 duplicates (topic and Parquet); 1 repeated raw records were dropped.\newline \textit{Log: Appendix, Q-02.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{Q-03} & \textbf{Completeness: no record is lost between raw, clean and rejected}\newline Check that raw = clean + rejected for the CRAN logs, and that Kafka and HDFS agree. & 1.~Stop the producers and wait until the Flink consumer lag is 0 and the files are finalised.\newline 2.~Count the raw topic, raw text, clean topic, clean Parquet and bad Parquet. & raw = clean + rejected; topic counts equal file counts. & 2462 raw lines = 2456 clean + 6 rejected; Kafka and HDFS counts agree.\newline \textit{Log: Appendix, Q-03.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{Q-04} & \textbf{Partitioning by event time}\newline Check that Parquet files are in the dt/\allowbreak{}hr directory of the record's time. & 1.~Read the Parquet datasets and compare dt and hr with event\_\allowbreak{}ts (arrival\_\allowbreak{}ts for rejects). & Every row is in the correct partition. & All Parquet rows are in the partition matching their event time (rejected lines: arrival time).\newline \textit{Log: Appendix, Q-04.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{Q-05} & \textbf{Keys and partition locality}\newline Check that records of one package or repository stay in one partition. & 1.~Group the downloads topic by package\_\allowbreak{}name and the GitHub topic by repo\_\allowbreak{}name.\newline 2.~Count partitions per key. & Exactly one partition per key; key equals the field. & Records with the same package\_\allowbreak{}name /\allowbreak{} repo\_\allowbreak{}name always go to the same partition, so their order is kept.\newline \textit{Log: Appendix, Q-05.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{Q-06} & \textbf{Reject accounting}\newline Check that rejections happen only for the documented reasons and only where expected. & 1.~Count the rejected CRAN lines by reason and compare them with the injected invalid lines.\newline 2.~Count the rejected GitHub records by reason. & CRAN rejects are exactly the injected ones; GitHub reasons are documented, stale history is rejected. & CRAN: 6 rejects, all of them injected test lines. GitHub: 2219 rejects (\{'stale\_\allowbreak{}timestamp': 2215, 'invalid\_\allowbreak{}track': 1, 'unparseable': 1, 'missing\_\allowbreak{}field': 1, 'invalid\_\allowbreak{}timestamp': 1\}), 2905 clean events.\newline \textit{Log: Appendix, Q-06.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{Q-07} & \textbf{Event-time plausibility of the clean data}\newline Check the time bounds the ingest jobs promise. & 1.~Compute event\_\allowbreak{}ts - arrival\_\allowbreak{}ts (CRAN) and fetched\_\allowbreak{}ts - event\_\allowbreak{}ts (GitHub) over all clean rows. & CRAN: -7 d to +5 min; GitHub: 0 to about 7 d. & All clean records satisfy the event-time bounds enforced by the ingest jobs.\newline \textit{Log: Appendix, Q-07.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\end{longtable}}

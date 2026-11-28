@@ -1,0 +1,6 @@
+confluent-kafka
+fastavro
+pyarrow
+pandas
+requests
+-r ../../poller/requirements-dev.txt

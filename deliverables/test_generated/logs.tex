@@ -1,0 +1,62 @@
+\subsection*{FA-01 -- Log source (log generator; Filebeat later) delivers log lines to Kafka}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-01.log}
+
+\subsection*{FA-02 -- Platform initialisation: topics, schemas, HDFS directories}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-02.log}
+
+\subsection*{FA-03 -- GitHub poller unit tests (mocked HTTP)}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-03.log}
+
+\subsection*{FA-04 -- GitHub poller live tests (real API)}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-04.log}
+
+\subsection*{FA-05 -- Watch-list build from crantogit and publication to Kafka}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-05.log}
+
+\subsection*{FA-06 -- GitHub events reach Kafka with the documented format}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-06.log}
+
+\subsection*{FA-07 -- API limit handling: conditional requests and quota}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-07.log}
+
+\subsection*{FA-08 -- Poller restart does not duplicate events}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FA-08.log}
+
+\subsection*{FP-01 -- Valid CRAN log lines are parsed into the clean topic}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FP-01.log}
+
+\subsection*{FP-02 -- Invalid CRAN log lines are rejected with a reason}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FP-02.log}
+
+\subsection*{FP-03 -- Package downloads are extracted from the clean log}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FP-03.log}
+
+\subsection*{FP-04 -- GitHub events: mapping and deduplication}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FP-04.log}
+
+\subsection*{FP-05 -- Invalid GitHub records are rejected with a reason}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FP-05.log}
+
+\subsection*{FP-06 -- Raw records are stored unchanged}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/FP-06.log}
+
+\subsection*{Q-01 -- Schema conformance and value constraints}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/Q-01.log}
+
+\subsection*{Q-02 -- No duplicate GitHub events in the clean data}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/Q-02.log}
+
+\subsection*{Q-03 -- Completeness: no record is lost between raw, clean and rejected}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/Q-03.log}
+
+\subsection*{Q-04 -- Partitioning by event time}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/Q-04.log}
+
+\subsection*{Q-05 -- Keys and partition locality}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/Q-05.log}
+
+\subsection*{Q-06 -- Reject accounting}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/Q-06.log}
+
+\subsection*{Q-07 -- Event-time plausibility of the clean data}
+\lstinputlisting[basicstyle=\ttfamily\tiny,breaklines=true,breakatwhitespace=false]{test_logs/Q-07.log}

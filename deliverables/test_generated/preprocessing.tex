@@ -1,0 +1,25 @@
+{\footnotesize
+\begin{longtable}{@{}L{1.1cm}L{5.8cm}L{5.4cm}L{3.9cm}L{5.5cm}L{1.3cm}@{}}
+\toprule
+\textbf{ID} & \textbf{Test objective} & \textbf{Test steps} & \textbf{Expected result} & \textbf{Actual result} & \textbf{Status} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{ID} & \textbf{Test objective} & \textbf{Test steps} & \textbf{Expected result} & \textbf{Actual result} & \textbf{Status} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\textbf{FP-01} & \textbf{Valid CRAN log lines are parsed into the clean topic}\newline Check the parsing of the Flink log job for valid lines. & 1.~Produce six valid test lines to cran\_\allowbreak{}mirror\_\allowbreak{}logs.\newline 2.~Read them from cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}clean (Avro).\newline 3.~Compare every field with the input. & All six lines arrive with correct fields; '-' size becomes null. & All 6 valid test lines reached cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}clean with correct fields; '-' size became null.\newline \textit{Log: Appendix, FP-01.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FP-02} & \textbf{Invalid CRAN log lines are rejected with a reason}\newline Check that invalid lines are kept in the bad zone and never reach the clean data. & 1.~Produce six invalid lines (garbage, status 999, method FOO, +1 day, -30 days, offset +0200).\newline 2.~Read /\allowbreak{}data/\allowbreak{}raw/\allowbreak{}cran\_\allowbreak{}mirror\_\allowbreak{}logs\_\allowbreak{}bad as a DataFrame.\newline 3.~Compare reject\_\allowbreak{}reason with the expectation.\newline 4.~Check the clean topic. & Each line is in the bad zone with the expected reason and absent from the clean topic. & 6/\allowbreak{}6 invalid lines were rejected with the expected reject\_\allowbreak{}reason and none reached the clean topic.\newline \textit{Log: Appendix, FP-02.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FP-03} & \textbf{Package downloads are extracted from the clean log}\newline Check the download extraction job: package, version, artifact type, target system, outcome. & 1.~Use the valid test lines of FP-01 (source, macOS, Windows, a 404, PACKAGES.rds, an HTML page).\newline 2.~Read cran\_\allowbreak{}mirror\_\allowbreak{}package\_\allowbreak{}downloads (Avro).\newline 3.~Compare the derived fields; check the skipped requests. & Four downloads with correct fields (404 = FAILURE); the two non-package requests are skipped. & 4/\allowbreak{}4 package requests were extracted correctly (source, macos, windows, 404 as FAILURE); 2 non-downloads skipped.\newline \textit{Log: Appendix, FP-03.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FP-04} & \textbf{GitHub events: mapping and deduplication}\newline Check the GitHub Flink job: field extraction, nullable fields and removal of repeated event ids. & 1.~Produce a ReleaseEvent twice and a PushEvent without organisation to github\_\allowbreak{}repo\_\allowbreak{}updates.\newline 2.~Read github\_\allowbreak{}repo\_\allowbreak{}updates\_\allowbreak{}clean (Avro).\newline 3.~Compare the fields; count the occurrences of the repeated event. & The repeated event appears once; fields are mapped; missing organisation is null. & Duplicate event kept once; release\_\allowbreak{}tag, ref, packages and nullable org\_\allowbreak{}login mapped correctly.\newline \textit{Log: Appendix, FP-04.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FP-05} & \textbf{Invalid GitHub records are rejected with a reason}\newline Check the validation rules of the GitHub job. & 1.~Produce five invalid records (30 days old, track 'other', not JSON, no repo name, invalid timestamp).\newline 2.~Read /\allowbreak{}data/\allowbreak{}raw/\allowbreak{}github\_\allowbreak{}repo\_\allowbreak{}updates\_\allowbreak{}bad as a DataFrame.\newline 3.~Compare reject\_\allowbreak{}reason; check the clean topic. & Each record is in the bad zone with the expected reason and absent from the clean topic. & 5/\allowbreak{}5 invalid GitHub events were rejected with the expected reject\_\allowbreak{}reason.\newline \textit{Log: Appendix, FP-05.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\textbf{FP-06} & \textbf{Raw records are stored unchanged}\newline Check that the raw zone keeps every input record byte for byte, valid or not. & 1.~Read the text files of /\allowbreak{}data/\allowbreak{}raw/\allowbreak{}cran\_\allowbreak{}mirror\_\allowbreak{}logs and /\allowbreak{}data/\allowbreak{}raw/\allowbreak{}github\_\allowbreak{}repo\_\allowbreak{}updates.\newline 2.~Look for each injected record. & All injected records are present unchanged. & All 12 injected log lines and 8 injected GitHub records are stored unchanged in the raw zone.\newline \textit{Log: Appendix, FP-06.} & \textbf{\textcolor{green!45!black}{PASS}} \\
+\midrule[0.3pt]
+\end{longtable}}
