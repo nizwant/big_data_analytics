@@ -26,6 +26,22 @@ x-flink: &flink
       # Client-side HDFS setting; keep in sync with dfs.replication in x-hadoop-config.
       flink.hadoop.dfs.replication: ${HDFS_REPLICATION:-1}
 
+# Settings shared by all Spark containers are in src/spark/spark-defaults.conf (baked into
+# the image); only the ones that differ between dev and stage/prod are set here.
+x-spark: &spark
+  build: ./src/spark
+  image: bigdata/spark:3.5.8
+  restart: unless-stopped
+  # tini as PID 1, to reap the processes a worker starts (executors and their Python workers).
+  init: true
+  environment: &spark-env
+    # Heap of the master, worker and history server daemons (default 1 GB).
+    SPARK_DAEMON_MEMORY: 512m
+    # Client-side HDFS setting, as in FLINK_PROPERTIES; keep in sync with dfs.replication in
+    # x-hadoop-config. Passed to every spark-submit (the driver) as a system property,
+    # since spark-defaults.conf cannot read variables. Executors get it from the driver.
+    SPARK_SUBMIT_OPTS: -Dspark.hadoop.dfs.replication=${HDFS_REPLICATION:-1}
+
 services:
   kafka:
     image: apache/kafka:4.3.2
@@ -219,6 +235,96 @@ services:
       kafka:
         condition: service_healthy
       schema-registry:
+        condition: service_healthy
+
+  # Spark standalone cluster (batch layer). The workers run the executors. The drivers run
+  # in the job containers (spark-submit in client mode: standalone Spark has no cluster
+  # deploy mode for Python). The master UI also proxies the worker and application UIs.
+  spark-master:
+    <<: *spark
+    hostname: spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8090:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/json/', timeout=5)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  # Dev runs one worker; the ha profile (stage/prod) adds spark-worker2 and spark-worker3.
+  # Cores and memory are what a worker offers to executors (1 core and 1 GB in dev,
+  # stage.env and prod.env set 2 and 2g); the worker daemon itself takes up to 512 MB more.
+  spark-worker1: &spark-worker
+    <<: *spark
+    hostname: spark-worker1
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "--host", "spark-worker1", "spark://spark-master:7077"]
+    environment:
+      <<: *spark-env
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-1}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-1g}
+      # Deletes the work directories (executor logs) of applications that finished more
+      # than 7 days ago.
+      SPARK_WORKER_OPTS: -Dspark.worker.cleanup.enabled=true
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      # Healthy once registered with the master (masterurl stays empty until then).
+      test: ["CMD-SHELL", "python3 -c \"import json, urllib.request; assert json.load(urllib.request.urlopen('http://localhost:8081/json/', timeout=5))['masterurl']\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  spark-worker2:
+    <<: *spark-worker
+    profiles: [ha]
+    hostname: spark-worker2
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "--host", "spark-worker2", "spark://spark-master:7077"]
+
+  spark-worker3:
+    <<: *spark-worker
+    profiles: [ha]
+    hostname: spark-worker3
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "--host", "spark-worker3", "spark://spark-master:7077"]
+
+  # Lists finished and running applications from the event logs in HDFS /spark/event-logs.
+  # Fails and restarts until that directory exists (deploy/hdfs_init.sh).
+  spark-history:
+    <<: *spark
+    hostname: spark-history
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.history.HistoryServer"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:18080:18080"
+    depends_on:
+      namenode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:18080/api/v1/applications?limit=1', timeout=5)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # Batch jobs (profile spark-jobs): each container runs one spark-submit, i.e. the driver,
+  # and exits when the job is done. Run by hand for now:
+  #   docker compose --profile spark-jobs run --rm spark-package-daily-downloads
+  spark-package-daily-downloads:
+    <<: *spark
+    profiles: [spark-jobs]
+    restart: "no"
+    command: ["/opt/spark/bin/spark-submit", "/opt/jobs/package_daily_downloads.py"]
+    depends_on:
+      spark-worker1:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+      # The job writes Parquet to HDFS, which needs a live DataNode.
+      datanode1:
+        condition: service_healthy
+      cassandra:
         condition: service_healthy
 
   cassandra:
