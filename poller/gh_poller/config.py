@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 try:
     from dotenv import load_dotenv
@@ -25,6 +26,9 @@ class Config:
     github_token: str
     data_dir: Path
     watchlist_path: Path
+    # Where the poller gets its watch-list: "kafka" (newest complete snapshot in watchlist_topic,
+    # published by the Airflow DAG github_watchlist) or "file" (watchlist_path).
+    watchlist_source: str = "file"
     global_track_enabled: bool = False
     global_max_pages: int = 3
     global_min_interval_s: float = 60
@@ -57,20 +61,23 @@ class Config:
         return self.data_dir / "state.sqlite3"
 
 
-def load_config(env_file: str | None = ".env") -> Config:
+def load_config(env_file: str | None = ".env", environ: Mapping[str, str] | None = None) -> Config:
+    """Settings from `environ` (default: the process environment, after loading `env_file`)."""
     if load_dotenv is not None and env_file and Path(env_file).exists():
         load_dotenv(env_file, override=False)
-    env = os.environ
+    env = os.environ if environ is None else environ
 
     token = env.get("GITHUB_TOKEN", "").strip()
     if not token:
         raise SystemExit("GITHUB_TOKEN is not set. Copy .env.example to .env and add your token.")
 
     data_dir = Path(env.get("DATA_DIR", "./data"))
+    kafka = env.get("KAFKA_BOOTSTRAP_SERVERS", "").strip() or None
     cfg = Config(
         github_token=token,
         data_dir=data_dir,
         watchlist_path=Path(env.get("WATCHLIST_PATH") or data_dir / "watchlist.csv"),
+        watchlist_source=env.get("WATCHLIST_SOURCE", "").strip().lower() or ("kafka" if kafka else "file"),
         global_track_enabled=_bool(env.get("GLOBAL_TRACK_ENABLED"), False),
         global_max_pages=int(env.get("GLOBAL_MAX_PAGES", "3")),
         global_min_interval_s=float(env.get("GLOBAL_MIN_INTERVAL_S", "60")),
@@ -83,7 +90,7 @@ def load_config(env_file: str | None = ".env") -> Config:
         crantogit_url=env.get("CRANTOGIT_URL", "").strip() or DEFAULT_CRANTOGIT_URL,
         org_min_r_share=float(env.get("ORG_MIN_R_SHARE", "0.5")),
         watchlist_max_owners=int(env.get("WATCHLIST_MAX_OWNERS") or "0"),
-        kafka_bootstrap_servers=env.get("KAFKA_BOOTSTRAP_SERVERS", "").strip() or None,
+        kafka_bootstrap_servers=kafka,
         kafka_topic=env.get("KAFKA_TOPIC", "").strip() or "github_repo_updates",
         watchlist_topic=env.get("WATCHLIST_TOPIC", "").strip() or "github_repo_list",
         events_jsonl=_bool(env.get("EVENTS_JSONL"), True),
@@ -101,6 +108,10 @@ def load_config(env_file: str | None = ".env") -> Config:
         problems.append("GLOBAL_MAX_PAGES and WATCHLIST_MAX_PAGES must be 1-3 (GitHub serves at most 300 events)")
     if not cfg.kafka_bootstrap_servers and not cfg.events_jsonl:
         problems.append("no output: set KAFKA_BOOTSTRAP_SERVERS or EVENTS_JSONL=true")
+    if cfg.watchlist_source not in ("kafka", "file"):
+        problems.append("WATCHLIST_SOURCE must be kafka or file")
+    elif cfg.watchlist_source == "kafka" and not cfg.kafka_bootstrap_servers:
+        problems.append("WATCHLIST_SOURCE=kafka needs KAFKA_BOOTSTRAP_SERVERS")
     if problems:
         raise SystemExit("Invalid configuration: " + "; ".join(problems))
     return cfg

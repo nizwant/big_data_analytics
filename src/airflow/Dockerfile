@@ -19,3 +19,9 @@ RUN pip install --no-cache-dir "apache-airflow==${AIRFLOW_VERSION}" -r /requirem
 # imports them when [core] security = kerberos, which this stack does not use. So it
 # is installed without its dependencies; hdfs itself comes from requirements.txt.
 RUN pip install --no-cache-dir --no-deps apache-airflow-providers-apache-hdfs --constraint "${CONSTRAINTS}"
+
+# The watch-list build of the GitHub poller, run by the DAG github_watchlist. Its dependencies
+# (httpx, confluent-kafka) are already installed; the package comes from the build context
+# `poller` (additional_contexts in docker-compose.yml). Only the sources, no __pycache__.
+COPY --from=poller gh_poller/*.py /opt/gh_poller/gh_poller/
+ENV PYTHONPATH=/opt/gh_poller

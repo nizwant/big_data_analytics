@@ -26,4 +26,10 @@ done
   --topic _schemas --partitions 1 --replication-factor 1 \
   --config cleanup.policy=compact
 
+# The GitHub poller and the DAG github_watchlist read all of github_repo_list to find the newest
+# complete watch-list snapshot; 30 days (instead of the broker's 7) keep one even if the daily
+# build fails for weeks. Set with --alter, so it also applies to an existing topic.
+docker compose "$@" exec -T kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka:19092 \
+  --alter --entity-type topics --entity-name github_repo_list --add-config retention.ms=2592000000
+
 "${KAFKA_TOPICS[@]}" --list

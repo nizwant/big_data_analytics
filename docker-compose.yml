@@ -369,10 +369,22 @@ services:
   # the container exits and Docker restarts it. Before starting them, the image's
   # entrypoint migrates the database and creates the admin user (both idempotent).
   airflow:
-    build: ./src/airflow
+    build:
+      context: ./src/airflow
+      # The image also carries the poller's gh_poller package, for the DAG github_watchlist.
+      additional_contexts:
+        poller: ./poller
     image: bigdata/airflow:3.4.0
     restart: unless-stopped
-    command: ["bash", "-c", "airflow api-server & airflow scheduler & airflow dag-processor & airflow triggerer & wait -n"]
+    # The GitHub token (from the host shell when set there, else from poller/.env) becomes the
+    # Airflow Variable github_token, read from the environment and never stored in the database;
+    # the DAG github_watchlist uses it.
+    command:
+      - bash
+      - -c
+      - >-
+        export AIRFLOW_VAR_GITHUB_TOKEN="$${GITHUB_TOKEN_FROM_SHELL:-$${GITHUB_TOKEN:-}}";
+        airflow api-server & airflow scheduler & airflow dag-processor & airflow triggerer & wait -n
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:8080:8080"
     depends_on:
@@ -383,6 +395,11 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    # The token and the watch-list build settings (CRANTOGIT_URL, ORG_MIN_R_SHARE, ...) for the DAG
+    # github_watchlist; the values under environment take precedence.
+    env_file:
+      - path: ./poller/.env
+        required: false
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres/airflow
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
@@ -413,6 +430,11 @@ services:
       AIRFLOW_CONN_WEBHDFS_DEFAULT: webhdfs://airflow@namenode:9870
       # Kafka for the DAGs, read from the environment like in the Flink jobs.
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # GITHUB_TOKEN of the host shell (e.g. direnv), if any; see command. Not a bare `GITHUB_TOKEN:`
+      # passthrough, which would unset the poller/.env value whenever the shell has none.
+      GITHUB_TOKEN_FROM_SHELL: ${GITHUB_TOKEN:-}
+      # Watch-list size (DAG github_watchlist): dev builds a small one; stage.env and prod.env set 0 (all owners).
+      WATCHLIST_MAX_OWNERS: ${POLLER_WATCHLIST_MAX_OWNERS:-100}
     volumes:
       - ./src/airflow/dags:/opt/airflow/dags:ro
     healthcheck:
@@ -438,12 +460,19 @@ services:
 
   # GitHub Events API poller (stream B): every new public event once, as JSON, to the topic
   # github_repo_updates (key: repository name). Needs poller/.env with GITHUB_TOKEN, so it starts
-  # only with --profile github. State (ETags, seen event ids) lives in POLLER_DATA_DIR.
+  # only with --profile github. It polls the newest complete watch-list in github_repo_list,
+  # published daily by the Airflow DAG github_watchlist, and waits until there is one.
+  # State (ETags, seen event ids) lives in POLLER_DATA_DIR.
   github-poller:
     profiles: [github]
     build: ./poller
     image: bigdata/github-poller
     restart: unless-stopped
+    # GITHUB_TOKEN from the host shell (e.g. direnv) when set there, else from poller/.env. Also
+    # applies to `docker compose run github-poller <command>`. Setting an entrypoint drops the
+    # image's CMD, so command repeats it.
+    entrypoint: ["sh", "-c", "export GITHUB_TOKEN=\"$${GITHUB_TOKEN_FROM_SHELL:-$${GITHUB_TOKEN:-}}\"; unset GITHUB_TOKEN_FROM_SHELL; exec \"$$@\"", "sh"]
+    command: ["python", "-m", "gh_poller"]
     depends_on:
       kafka:
         condition: service_healthy
@@ -453,18 +482,18 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: github_repo_updates
-      # Passed through from the host shell (e.g. direnv) when set; otherwise poller/.env applies.
-      GITHUB_TOKEN:
+      # Not a bare `GITHUB_TOKEN:` passthrough, which would unset the poller/.env value whenever
+      # the shell has none; see entrypoint.
+      GITHUB_TOKEN_FROM_SHELL: ${GITHUB_TOKEN:-}
       DATA_DIR: /data
-      # Dev builds a small watch-list; stage.env and prod.env set 0 (all owners).
-      WATCHLIST_MAX_OWNERS: ${POLLER_WATCHLIST_MAX_OWNERS:-100}
+      # Used only with WATCHLIST_SOURCE=file in poller/.env (a hand-made list instead of the topic).
       WATCHLIST_PATH: ${POLLER_WATCHLIST_PATH:-/data/watchlist.csv}
       # Daily JSONL copy of the events (input for scripts/check_run.py).
       EVENTS_JSONL: ${POLLER_EVENTS_JSONL:-false}
     volumes:
       - ${POLLER_DATA_DIR:-poller-data}:/data
     healthcheck:
-      # The global track logs a request at least every 60 s.
+      # Every poll is logged, and tier 1 is polled every 120 s; unhealthy while waiting for a watch-list.
       test: ["CMD-SHELL", "find /data/logs -name 'requests-*.jsonl' -mmin -5 | grep -q ."]
       interval: 60s
       timeout: 10s

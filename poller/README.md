@@ -6,16 +6,17 @@ and/or to daily JSONL files.
 | Track | Source | Purpose |
 |---|---|---|
 | `global` | `GET /events`, pages 1–3, at most every 60 s; off by default (`GLOBAL_TRACK_ENABLED=true` to enable) | Stream volume (> 1 event / 30 s) |
-| `watchlist` | timelines in `watchlist.csv`, built from `crantogit.csv` | Repositories behind CRAN packages |
+| `watchlist` | timelines of the newest complete watch-list in the Kafka topic `github_repo_list`, built daily from `crantogit.csv` by the Airflow DAG `github_watchlist` | Repositories behind CRAN packages |
 
 ## Run
 
-Runs as the Compose service `github-poller` (profile `github`); start, watch-list build and stage/prod
-paths are in the main README. It needs `poller/.env` with `GITHUB_TOKEN` (copy `.env.example`).
+Runs as the Compose service `github-poller` (profile `github`); start, watch-list DAG and stage/prod
+paths are in the main README. It needs `GITHUB_TOKEN` in the shell or in `poller/.env` (copy `.env.example`);
+the Airflow container reads the same file for the watch-list build.
 
 ```bash
-python -m gh_poller.watchlist     # build DATA_DIR/watchlist.csv
 python -m gh_poller               # the poller (the container's default command)
+python -m gh_poller.watchlist     # the watch-list build by hand (the DAG runs it daily); --force: see Watch-list
 python scripts/check_run.py       # run report: statuses, rate limits, duplicates, volume, delays (needs EVENTS_JSONL)
 ```
 
@@ -36,17 +37,18 @@ Environment variables or `.env` (all settings: `.env.example`).
 |---|---|---|
 | `GITHUB_TOKEN` | required | Fine-grained PAT, public repositories read-only |
 | `DATA_DIR` | `./data` | Output, state and caches (in Compose: `/data`, mounted from `POLLER_DATA_DIR`) |
-| `WATCHLIST_PATH` | `DATA_DIR/watchlist.csv` | Watch-list, reloaded when the file changes |
+| `WATCHLIST_SOURCE` | `kafka` if `KAFKA_BOOTSTRAP_SERVERS` is set, else `file` | Where the poller gets its watch-list: the newest complete snapshot in `WATCHLIST_TOPIC`, or `WATCHLIST_PATH` |
+| `WATCHLIST_PATH` | `DATA_DIR/watchlist.csv` | Watch-list file, written by every build; with `WATCHLIST_SOURCE=file` the poller reloads it when it changes |
 | `TIER1_INTERVAL_S` | `120` | Tier-1 poll interval |
 | `TIER2_INTERVAL_S` | automatic | Tier-2 poll interval (≥ 900); automatic: tier-2 timelines / `TIER2_BUDGET_PER_H`, in whole hours |
 | `TIER2_BUDGET_PER_H` | `3500` | Cap on paid tier-2 page requests per hour (304s are free) |
 | `CRANTOGIT_URL` | r-universe `crantogit.csv` on GitHub | Source of the package → repo mapping for the watch-list build (URL or file path) |
 | `GLOBAL_TRACK_ENABLED` | `false` | Also poll the global feed `GET /events` (`track: global`) |
-| `WATCHLIST_MAX_OWNERS` | `0` (all) | Watch-list build: keep the tier-1 organisations plus this many other owners (those with the most repos); in Compose: `POLLER_WATCHLIST_MAX_OWNERS` (default 100, 0 in `stage.env`/`prod.env`) |
+| `WATCHLIST_MAX_OWNERS` | `0` (all) | Watch-list build: keep the tier-1 organisations plus this many other owners (those with the most repos); in Compose, on the `airflow` service: `POLLER_WATCHLIST_MAX_OWNERS` (default 100, 0 in `stage.env`/`prod.env`) |
 | `ORG_MIN_R_SHARE` | `0.5` | Poll an organisation's timeline only if this share of its public repos are R packages |
 | `KAFKA_BOOTSTRAP_SERVERS` | empty | Kafka brokers; empty: no Kafka output (in Compose: `kafka:19092`) |
 | `KAFKA_TOPIC` | `github_repo_updates` | Topic for the events (created by `deploy/kafka_init.sh`) |
-| `WATCHLIST_TOPIC` | `github_repo_list` | Topic for the watch-list rows, sent by every watch-list build when Kafka is set |
+| `WATCHLIST_TOPIC` | `github_repo_list` | Topic for the watch-list rows: sent by every build when Kafka is set, read by the poller |
 | `EVENTS_JSONL` | `true` | Also write the events to `DATA_DIR/events/` (in Compose: `POLLER_EVENTS_JSONL`, default `false`) |
 
 ## Watch-list
@@ -57,13 +59,26 @@ Environment variables or `.env` (all settings: `.env.example`).
 - any other owner → `/repos/{owner}/{repo}/events` per repo;
 - tier 1: the `cran` mirror and a hand-picked list of R organisations (`TIER1_ORGS`, no formal rule); tier 2: the rest.
 
-Account types are cached in `DATA_DIR/account_types.csv`, so an interrupted build resumes. Whatever
-refreshes `watchlist.csv` should write a temporary file and rename it.
+Account types are cached in `DATA_DIR/account_types.csv`, so an interrupted build resumes; the build
+stops while fewer than 1,000 requests of the hourly quota are left, for the poller. The DAG
+`github_watchlist` keeps that file in HDFS (`/data/ref/github_account_types/account_types.csv`) and builds
+from the copy of `crantogit.csv` it lands in `/data/raw/crantogit/dt=…`. Whatever refreshes `watchlist.csv`
+should write a temporary file and rename it.
 
 With `KAFKA_BOOTSTRAP_SERVERS` set, the build also sends every row to `github_repo_list`, one JSON message
 per row, key `package` (the endpoint for tier-1 organisations without a package):
-`{"built_at", "package", "owner", "repo", "endpoint", "tier"}`; `built_at` is the same for one build.
-If Kafka does not confirm, the build exits with 1 (the file is already written).
+`{"built_at", "rows_in_snapshot", "package", "owner", "repo", "endpoint", "tier"}`; `built_at` is the same
+for one build and `rows_in_snapshot` is its number of rows. If Kafka does not confirm, the build exits with 1
+(the file is already written). Before that, it reads the newest snapshot in the topic: a list with more
+than 10% fewer rows is neither written nor published (exit 1), unless `--force` (in the DAG:
+`{"force": true}`), so a truncated `crantogit.csv` cannot empty the poller's watch-list.
+
+The poller (`WATCHLIST_SOURCE=kafka`, `gh_poller/snapshots.py`) reads every partition of the topic from the
+beginning, without committing offsets, and groups the rows by `built_at`. It applies the newest snapshot
+whose `rows_in_snapshot` rows have all arrived, once it has read every partition to its end (at most 30 s
+at start), and then checks every minute for a newer one; incomplete snapshots (a build that failed while
+publishing) and rows without `rows_in_snapshot` are ignored. While there is none it waits, instead of
+exiting. The topic keeps 30 days (`deploy/kafka_init.sh`).
 
 ## Output
 

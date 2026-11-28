@@ -14,7 +14,7 @@ See [Milestone 1](deliverables/Milestone_1.pdf) for the project proposal and arc
 
 The stack includes:
 
-- **Kafka** 4.3.2 (single-node KRaft) with the topics `cran_mirror_logs` (raw log lines), `cran_mirror_logs_clean` (validated records as Avro, schema in `schemas/cran_mirror_logs_clean.avsc`), `cran_mirror_package_downloads` (one record per package file download, Avro, schema in `schemas/cran_mirror_package_downloads.avsc`), `_schemas` (storage of the schema registry, compacted, 1 partition), `github_repo_updates` (raw GitHub events as JSON), `github_repo_updates_clean` (validated GitHub events with repeats removed, Avro, schema in `schemas/github_repo_updates_clean.avsc`), and `github_repo_list` (topic auto-creation is disabled).
+- **Kafka** 4.3.2 (single-node KRaft) with the topics `cran_mirror_logs` (raw log lines), `cran_mirror_logs_clean` (validated records as Avro, schema in `schemas/cran_mirror_logs_clean.avsc`), `cran_mirror_package_downloads` (one record per package file download, Avro, schema in `schemas/cran_mirror_package_downloads.avsc`), `_schemas` (storage of the schema registry, compacted, 1 partition), `github_repo_updates` (raw GitHub events as JSON), `github_repo_updates_clean` (validated GitHub events with repeats removed, Avro, schema in `schemas/github_repo_updates_clean.avsc`), and `github_repo_list` (the watch-list snapshots of the Airflow DAG `github_watchlist`, one JSON message per row, kept 30 days instead of 7; topic auto-creation is disabled).
 - **Schema Registry** (Confluent, 8.4.1) at `<host>:8085`. It keeps its schemas in the Kafka topic `_schemas`, so they persist with the Kafka data and survive restarts. `deploy/schema_init.sh` registers every `schemas/*.avsc` as the subject `<file name>-value`, for example `cran_mirror_logs_clean-value`; changes must stay backward compatible (the registry rejects others). Describe a schema with `curl localhost:8085/subjects/cran_mirror_logs_clean-value/versions/latest`.
 - **HDFS** 3.4.2 (1 NameNode + 1 DataNode with replication 1 in dev; 3 DataNodes with replication 2 on stage/prod via `COMPOSE_PROFILES=ha` and `HDFS_REPLICATION=2`) for the batch layer. The NameNode is formatted automatically on first start. Inside the Docker network it is reachable at `hdfs://namenode:8020`. Only the web UI is published, at `<host>:9870`.
 - **Cassandra** 5.0.9 (single node, 1 GB heap) for the serving layer, published at `<host>:9042` without authentication, with the keyspace `cran_analytics` (SimpleStrategy, RF 1). `deploy/cassandra_init.sh` creates the `batch_*` tables of the Spark jobs; the Flink jobs will add the `rt_*` tables.
@@ -27,13 +27,21 @@ The stack includes:
   docker compose exec cassandra cqlsh -e "SELECT * FROM cran_analytics.batch_package_daily_downloads LIMIT 10"
   ```
 
-- **Airflow** 3.4.0 for the batch layer, UI and REST API at `<host>:8080` (dev login `airflow` / `airflow`). One container, `airflow`, runs the api-server, the scheduler (which also runs the tasks, LocalExecutor), the DAG processor and the triggerer; if one of them dies the container exits and Docker restarts it. On every start it migrates the metadata database and creates the admin user (both idempotent). The database is a separate Postgres 16 (`airflow-postgres`, not published). DAGs live in `src/airflow/dags`, mounted read-only; new files show up within a minute and new DAGs start paused. Task logs are written to HDFS under `/airflow/logs/dag_id=…/run_id=…/task_id=…/attempt=N.log` when a task finishes, read from there by the UI, and deleted from the container, which therefore keeps no state; the colons of the run ID become dashes in the path, because HDFS does not allow `:`. Only the log of a task that is still running is served from the container, and the DAG processor's parse logs stay inside the container (Airflow cannot upload them). The image (`src/airflow/Dockerfile`, about 0.9 GB) is Airflow's slim image plus the `hdfs` (WebHDFS) and `confluent-kafka` clients and the HDFS provider for the logs, with versions pinned by Airflow's constraints file. DAGs reach HDFS through the `webhdfs_default` connection (`webhdfs://airflow@namenode:9870`, also used for the logs; for example `WebHDFSHook().get_conn()`) and Kafka through `KAFKA_BOOTSTRAP_SERVERS` (`kafka:19092`), like the Flink jobs. The DAG `stack_connectivity_check` (manual trigger only) writes, reads and deletes a file in HDFS and lists the Kafka topics, to check the wiring after a deploy:
+- **Airflow** 3.4.0 for the batch layer, UI and REST API at `<host>:8080` (dev login `airflow` / `airflow`). One container, `airflow`, runs the api-server, the scheduler (which also runs the tasks, LocalExecutor), the DAG processor and the triggerer; if one of them dies the container exits and Docker restarts it. On every start it migrates the metadata database and creates the admin user (both idempotent). The database is a separate Postgres 16 (`airflow-postgres`, not published). DAGs live in `src/airflow/dags`, mounted read-only; new files show up within a minute and new DAGs start paused. Task logs are written to HDFS under `/airflow/logs/dag_id=…/run_id=…/task_id=…/attempt=N.log` when a task finishes, read from there by the UI, and deleted from the container, which therefore keeps no state; the colons of the run ID become dashes in the path, because HDFS does not allow `:`. Only the log of a task that is still running is served from the container, and the DAG processor's parse logs stay inside the container (Airflow cannot upload them). The image (`src/airflow/Dockerfile`, about 0.9 GB) is Airflow's slim image plus the `hdfs` (WebHDFS) and `confluent-kafka` clients and the HDFS provider for the logs, with versions pinned by Airflow's constraints file, and the poller's `gh_poller` package (copied from `poller/`, the build context `poller`). DAGs reach HDFS through the `webhdfs_default` connection (`webhdfs://airflow@namenode:9870`, also used for the logs; for example `WebHDFSHook().get_conn()`) and Kafka through `KAFKA_BOOTSTRAP_SERVERS` (`kafka:19092`), like the Flink jobs. The DAG `stack_connectivity_check` (manual trigger only) writes, reads and deletes a file in HDFS and lists the Kafka topics, to check the wiring after a deploy:
 
   ```sh
   docker compose exec airflow airflow dags trigger stack_connectivity_check
   ```
 
-- **GitHub poller** (`poller/`, Compose service `github-poller`, profile `github`) polls the GitHub Events API: the timelines of repositories behind CRAN packages (the watch-list) and, only with `GLOBAL_TRACK_ENABLED=true`, the global public feed. Every new event goes once, as JSON, to the topic `github_repo_updates`, keyed by the repository name (`owner/repo`); the value is `{"fetched_at", "track", "endpoint", "packages", "event"}` with the raw GitHub event in `event`. Delivery is at least once, so consumers deduplicate on `event.id`. The service needs `poller/.env` with `GITHUB_TOKEN` (copy `poller/.env.example`); its state (ETags, seen event ids, watch-list) lives in `POLLER_DATA_DIR`. Details: [poller/README.md](poller/README.md).
+  The DAG `github_watchlist` (`src/airflow/dags/github_watchlist.py`, daily at 04:00 UTC, unpaused by `deploy/start_github.sh`) refreshes the GitHub poller's watch-list. `land_crantogit` downloads `crantogit.csv` unchanged to `/data/raw/crantogit/dt=YYYY-MM-DD/crantogit.csv` (a retry or a second run on the same day reuses it); `build_watchlist` builds the watch-list from it with the poller's own code and publishes it to `github_repo_list`, one message per row, each carrying `built_at` and `rows_in_snapshot`, so a reader can tell a complete snapshot from one whose publishing failed. The account types it looks up (`GET /users/{owner}`; about 2,800 requests for a full list without cache) are cached in `/data/ref/github_account_types/account_types.csv`. The build uses the poller's token: it stops while fewer than 1,000 requests of the hourly quota are left, and the next try (3 tries, an hour apart) continues from the cache. A list with more than 10% fewer rows than the newest snapshot is not published (the task fails); check the landed file, then run it anyway:
+
+  ```sh
+  docker compose exec airflow airflow dags trigger github_watchlist --conf '{"force": true}'
+  ```
+
+  The token reaches Airflow as the Variable `github_token` (environment variable `AIRFLOW_VAR_GITHUB_TOKEN`, never stored in the database), from `GITHUB_TOKEN` in the shell or in `poller/.env`, which the `airflow` service also reads (with the build settings of [poller/README.md](poller/README.md)); it is read when the container is created.
+
+- **GitHub poller** (`poller/`, Compose service `github-poller`, profile `github`) polls the GitHub Events API: the timelines of repositories behind CRAN packages (the watch-list) and, only with `GLOBAL_TRACK_ENABLED=true`, the global public feed. It polls the newest complete watch-list in `github_repo_list`, published by the DAG `github_watchlist`: on start it reads the whole topic, and then checks it every minute for a newer build; until there is one it waits. Every new event goes once, as JSON, to the topic `github_repo_updates`, keyed by the repository name (`owner/repo`); the value is `{"fetched_at", "track", "endpoint", "packages", "event"}` with the raw GitHub event in `event`. Delivery is at least once, so consumers deduplicate on `event.id`. The service needs `GITHUB_TOKEN` in the shell or in `poller/.env` (copy `poller/.env.example`; the shell wins); its state (ETags, seen event ids) lives in `POLLER_DATA_DIR`. Details: [poller/README.md](poller/README.md).
 
 The Hadoop image is published only for amd64, so on Apple Silicon it runs under emulation.
 
@@ -42,7 +50,7 @@ The Hadoop image is published only for amd64, so on Apple Silicon it runs under 
 ```sh
 deploy/up.sh             # 1. the structure: containers, topics, schemas, HDFS dirs, keyspace and tables
 deploy/start_logs.sh     # 2. the fake log generator, about 4 events/s to the `cran_mirror_logs` topic
-deploy/start_github.sh   # 3. the watch-list, the GitHub poller and its Flink job (needs GITHUB_TOKEN)
+deploy/start_github.sh   # 3. the watch-list DAG, the GitHub poller and its Flink job (needs GITHUB_TOKEN)
 ```
 
 All three pass extra arguments to `docker compose`, so stage/prod use `--env-file deploy/prod.env` as below.
@@ -71,19 +79,20 @@ EOF
 
 Set them before the first start: Postgres takes `AIRFLOW_DB_PASSWORD` only when it initializes its data directory, and connection passwords saved in the UI become unreadable if `AIRFLOW_FERNET_KEY` changes later. The admin password is also set only when the user is first created; change it afterwards in the UI.
 
-GitHub poller and its Flink job (need the topics and schemas from `deploy/init.sh`, and `poller/.env` with the token of the machine account):
+GitHub watch-list, poller and its Flink job (need the topics and schemas from `deploy/init.sh`, and `poller/.env` with the token of the machine account; Airflow reads it when its container is created, so create the file before the `up` above or recreate `airflow` afterwards):
 
 ```sh
 sudo mkdir -p /srv/bigdata/poller && sudo chown 1000:1000 /srv/bigdata/poller
-docker compose --env-file deploy/prod.env --profile github run --rm github-poller python -m gh_poller.watchlist   # also sends the rows to github_repo_list
-docker compose --env-file deploy/prod.env --profile github up -d --build github-poller flink-github-events-job
+deploy/start_github.sh --env-file deploy/prod.env   # unpauses and triggers github_watchlist, starts the poller and its Flink job
 ```
+
+The first full build looks up about 2,800 accounts and so may need several tries of `build_watchlist` (an hour apart) while the poller uses most of the quota; the poller starts polling once the first build is published.
 
 `deploy/init.sh` runs these scripts in order. Each one waits for its service, is safe to re-run, and passes any arguments through to `docker compose`:
 
-- `deploy/kafka_init.sh` creates the Kafka topics (3 partitions, RF 1) and the registry's `_schemas` topic.
+- `deploy/kafka_init.sh` creates the Kafka topics (3 partitions, RF 1) and the registry's `_schemas` topic, and sets the retention of `github_repo_list` to 30 days.
 - `deploy/schema_init.sh` waits for the schema registry and registers the Avro schemas in `schemas/`.
-- `deploy/hdfs_init.sh` waits for HDFS to leave safe mode, then creates `/data/raw/{cran_mirror_logs,cran_mirror_logs_bad,github_repo_updates,github_repo_updates_bad,github_repo_list}` and `/data/clean/{cran_mirror_logs,cran_mirror_package_downloads,github_repo_updates}`, `/data/batch` for the Spark batch views, `/airflow/logs` for the Airflow task logs, and `/spark/event-logs` and `/spark/driver-logs` for Spark.
+- `deploy/hdfs_init.sh` waits for HDFS to leave safe mode, then creates `/data/raw/{cran_mirror_logs,cran_mirror_logs_bad,github_repo_updates,github_repo_updates_bad,github_repo_list,crantogit}`, `/data/ref/github_account_types` for the account-type cache of the watch-list build, and `/data/clean/{cran_mirror_logs,cran_mirror_package_downloads,github_repo_updates}`, `/data/batch` for the Spark batch views, `/airflow/logs` for the Airflow task logs, and `/spark/event-logs` and `/spark/driver-logs` for Spark.
 - `deploy/cassandra_init.sh` creates the `cran_analytics` keyspace and the batch view tables (`batch_package_daily_downloads`).
 
 In dev the log generator starts before its topic exists and buffers events until `deploy/init.sh` creates it.
@@ -110,6 +119,7 @@ docker compose exec airflow airflow dags list-import-errors
 | `AIRFLOW_FERNET_KEY` | empty (no encryption) | Encryption key for connection passwords stored in the database |
 | `BIND_ADDRESS` | `127.0.0.1` | Host interface for published ports (9092, 9042, 9870, 8081, 8085, 8080, 8090, 18080) |
 | `KAFKA_EXTERNAL_HOST` | `localhost` | Host advertised to clients outside Docker |
-| `POLLER_DATA_DIR` | `poller-data` volume | GitHub poller state, watch-list and logs |
-| `POLLER_WATCHLIST_PATH` | `/data/watchlist.csv` | Watch-list inside the poller container |
+| `POLLER_DATA_DIR` | `poller-data` volume | GitHub poller state and logs |
+| `POLLER_WATCHLIST_MAX_OWNERS` | `100` (stage/prod: `0`) | Size of the watch-list built by the DAG `github_watchlist`: the tier-1 organisations plus this many other owners; `0` keeps all |
+| `POLLER_WATCHLIST_PATH` | `/data/watchlist.csv` | Watch-list file inside the poller container, used only with `WATCHLIST_SOURCE=file` in `poller/.env` |
 | `POLLER_EVENTS_JSONL` | `false` | Also write the events to daily JSONL files in `POLLER_DATA_DIR` |

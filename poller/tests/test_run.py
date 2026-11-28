@@ -8,10 +8,12 @@ import pytest
 import respx
 
 from gh_poller.__main__ import main
-from gh_poller.runner import run
+from gh_poller.runner import KafkaWatchlist, run
+from gh_poller.snapshots import WatchlistFeed
 from gh_poller.state import State
+from gh_poller.watchlist import Row, watchlist_records
 
-from helpers import API, VirtualClock, make_cfg, read_jsonl
+from helpers import API, FakeConsumer, VirtualClock, end_of, kafka_messages, make_cfg, read_jsonl
 
 T0 = 1_800_000_000.0
 HEADER = "package,owner,repo,endpoint,tier\n"
@@ -85,10 +87,65 @@ def test_rate_limit_on_the_global_feed_pauses_the_watch_list(tmp_path):
     assert polled["/orgs/tidyverse/events"][0] >= 600  # so did the watch-list, although due at 100 s
 
 
-def test_nothing_to_poll_exits(tmp_path):
+@respx.mock
+def test_poller_waits_for_a_watch_list_instead_of_exiting(tmp_path):
     cfg = dataclasses.replace(make_cfg(tmp_path), global_track_enabled=False)
-    with pytest.raises(SystemExit, match="Nothing to poll"):
-        asyncio.run(run(cfg))
+    clock = VirtualClock(T0)
+    polled: list[float] = []
+
+    def org(request):
+        polled.append(clock.now() - T0)
+        return httpx.Response(304, headers=quota(4000))
+
+    respx.get(f"{API}/orgs/tidyverse/events").mock(side_effect=org)
+
+    async def watch_list_appears_later():
+        await clock.sleep(90)
+        cfg.watchlist_path.write_text(HEADER + "dplyr,tidyverse,dplyr,/orgs/tidyverse/events,1\n", encoding="utf-8")
+
+    async def both():
+        await asyncio.gather(run(cfg, clock), watch_list_appears_later())
+
+    asyncio.run(clock.run(both(), until=T0 + 300))
+    assert polled and polled[0] == 120  # picked up by the check at 120 s
+
+
+@respx.mock
+def test_kafka_watch_list_newest_complete_snapshot_is_polled_and_replaced(tmp_path):
+    cfg = dataclasses.replace(make_cfg(tmp_path), global_track_enabled=False)
+    tidyverse = Row("dplyr", "tidyverse", "dplyr", "/orgs/tidyverse/events", 1)
+    rlib = Row("cli", "r-lib", "cli", "/orgs/r-lib/events", 1)
+    consumer = FakeConsumer()
+    # First fetch: an older snapshot and part of the topic; the newest snapshot arrives in the second.
+    consumer.add_batch(kafka_messages(watchlist_records([Row("x", "old", "x", "/orgs/old/events", 1)], "2026-11-26T04:00:00Z")) + end_of(0))
+    consumer.add_batch(kafka_messages(watchlist_records([tidyverse], "2026-11-27T04:00:00Z"), partitions=(1,)) + end_of(1, 2))
+    clock = VirtualClock(T0)
+    polled: dict[str, list[float]] = {}
+
+    def timeline(request):
+        polled.setdefault(request.url.path, []).append(clock.now() - T0)
+        event = {"id": request.url.path, "type": "PushEvent", "repo": {"name": "tidyverse/dplyr"}, "created_at": "2027-01-15T07:55:00Z"}
+        return httpx.Response(200, json=[event], headers=quota(4000))
+
+    respx.get(url__regex=rf"^{API}/orgs/[^/?]+/events").mock(side_effect=timeline)
+
+    async def next_build_is_published():
+        await clock.sleep(200)
+        consumer.add_batch(kafka_messages(watchlist_records([rlib], "2026-11-28T04:00:00Z")))
+
+    async def both():
+        source = KafkaWatchlist(WatchlistFeed("kafka:19092", "github_repo_list", consumer=consumer))
+        await asyncio.gather(run(cfg, clock, watchlist_source=source), next_build_is_published())
+
+    asyncio.run(clock.run(both(), until=T0 + 500))
+
+    assert "/orgs/old/events" not in polled  # never applied before the newest snapshot was known
+    assert polled["/orgs/tidyverse/events"][0] == 1  # after one second of reading the topic
+    assert max(polled["/orgs/tidyverse/events"]) < 241  # dropped with the snapshot of 2026-11-28
+    assert polled["/orgs/r-lib/events"][0] == 241  # checks every 60 s from 1 s: 61, ..., 241
+    (record, *_) = read_jsonl(cfg.events_dir)
+    assert record["packages"] == ["dplyr"]  # package lookup from the snapshot
+    assert consumer.closed
 
 
 @respx.mock

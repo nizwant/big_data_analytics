@@ -12,6 +12,8 @@ DIRS=(
   /data/raw/github_repo_updates
   /data/raw/github_repo_updates_bad
   /data/raw/github_repo_list
+  /data/raw/crantogit
+  /data/ref/github_account_types
   /data/clean/cran_mirror_logs
   /data/clean/cran_mirror_package_downloads
   /data/clean/github_repo_updates
